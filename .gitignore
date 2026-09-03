@@ -1,0 +1,19 @@
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+.venv*/
+__pycache__/
+build-host/
+migration-backup-idf5/
+*.bin
+*.elf
+
+# Local credentials and runtime data
+.env
+.env.*
+!.env.example
+auth.json
+*.pem
+*.key
+*.log
