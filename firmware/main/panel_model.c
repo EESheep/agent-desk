@@ -1,6 +1,66 @@
 #include "panel_model.h"
 #include <string.h>
 
+const char *panel_source_label(panel_source_t source)
+{
+    switch (source) {
+    case PANEL_CODEX: return "Codex";
+    case PANEL_KIMI: return "Kimi";
+    case PANEL_DSH: return "DSH";
+    default: return "All";
+    }
+}
+
+bool panel_parse_source(const char *name, panel_source_t *source)
+{
+    if (!name || !source) return false;
+    const char *names[] = {"codex", "kimi", "dsh"};
+    for (unsigned i = 0; i < PANEL_SOURCE_COUNT; i++) {
+        if (!strcmp(name, names[i])) {
+            *source = (panel_source_t)i;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool panel_task_matches(const panel_task_t *task, panel_source_t filter)
+{
+    return task && (unsigned)task->source < PANEL_SOURCE_COUNT &&
+        (filter == PANEL_SOURCE_COUNT || task->source == filter);
+}
+
+const panel_task_t *panel_find_task(const panel_snapshot_t *snapshot, panel_source_t source, const char *id)
+{
+    if (!snapshot || !id || !id[0]) return NULL;
+    for (size_t i = 0; i < snapshot->task_count && i < PANEL_MAX_TASKS; i++) {
+        if (snapshot->tasks[i].source == source && !strcmp(snapshot->tasks[i].id, id))
+            return &snapshot->tasks[i];
+    }
+    return NULL;
+}
+
+const panel_task_t *panel_completion(const panel_snapshot_t *snapshot)
+{
+    if (!snapshot) return NULL;
+    for (size_t i = 0; i < snapshot->task_count && i < PANEL_MAX_TASKS; i++) {
+        if (snapshot->tasks[i].state == PANEL_COMPLETED) return &snapshot->tasks[i];
+    }
+    return NULL;
+}
+
+bool panel_source_available(const panel_snapshot_t *snapshot, panel_source_t source)
+{
+    if (!snapshot || !snapshot->connected || (unsigned)source >= PANEL_SOURCE_COUNT) return false;
+    for (size_t i = 0; i < snapshot->task_count && i < PANEL_MAX_TASKS; i++) {
+        if (snapshot->tasks[i].source == source) return true;
+    }
+    for (size_t i = 0; i < snapshot->card_count && i < PANEL_MAX_CARDS; i++) {
+        if (snapshot->cards[i].source == source) return true;
+    }
+    return false;
+}
+
 const char *panel_state_label(panel_state_t state)
 {
     switch (state) {

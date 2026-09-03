@@ -1,4 +1,4 @@
-# Desk Panel：Codex 桌面状态屏
+# Agent Desk：AI 编程助手桌面状态屏
 
 把电脑上的 Codex 会话活动和账户额度显示到 **Waveshare ESP32-S3-Touch-LCD-7（800×480）**。电脑读取数据，ESP32 负责 LVGL 界面与触控；这是只读提醒屏，不执行审批，也不在设备上运行 Codex。
 
@@ -11,8 +11,10 @@
 - 显示 Codex 剩余额度、额度周期、重置倒计时和连接信息。
 - 通过 UART1 USB 同步；启动时自动查找 CH343 串口，不依赖固定 COM 号。
 - 超过约 15 秒未收到快照时显示 `STALE DATA`，保留旧数据供参考。
+- 顶部 All / Codex / Kimi / DSH 软件筛选，底部 Sessions / Attention / Information 导航；列表、计数、详情与信息卡按来源区分。
+- 全局提醒条跨软件筛选、页面和详情保持可见，优先显示最近完成；没有完成时显示需关注项，数据过期时显示过期警告。
 
-**尚未实现**：开机自启、运行中断线重连、Wi-Fi、OTA、完整中文字体、Kimi / DeepSeek Harness 接入。多软件界面只有设计预览。等待输入和失败的显示分支已存在，但不保证能读取桌面 App 中对应的实时状态。
+**尚未实现**：开机自启、运行中断线重连、Wi-Fi、OTA、完整中文字体、Kimi / DeepSeek Harness 的电脑端数据适配器。多软件界面和来源协议已实现，但当前只有真实 Codex 数据；Kimi / DSH 显示 NOT CONNECTED，不填充示例会话。等待输入和失败的显示分支已存在，但不保证能读取桌面 App 中对应的实时状态。
 
 ## 快速开始：设备已经烧录好
 
@@ -43,9 +45,9 @@ panel confirmed: I (...) desk_panel: REAL snapshot tasks=1 cards=4
 | --- | --- |
 | Sessions | 本次收到的会话，需关注项排在前面；点击进入详情 |
 | Attention | 最近结束、等待输入或失败的会话，不是审批列表 |
-| Information | ACTIVITY、CODEX LEFT、RESET IN、LINK 四张卡片 |
+| Information | All 显示各软件概览；选中 Codex 后显示 ACTIVITY、CODEX LEFT、RESET IN、LINK 四张卡片 |
 
-顶部 `sessions` 为本次列表数量，`running` 为运行中，`completed` 为最近结束，`action` 为等待输入或失败。`action` 不含完成项，Attention 页面包含完成项。
+顶部 `sessions`、`running`、`completed` 按当前软件筛选计数；底部 Attention 数量包含完成、等待输入和失败。全局提醒条不受当前筛选影响，不会自动跳页；通知随原会话退出 COMPLETED 状态而消失，没有独立已读存储。
 
 - `RUNNING`：日志推导的活动提醒，不是桌面 App 的权威实时状态。
 - `COMPLETED`：最近回合结束提示，通常约两分钟后回到 `IDLE`。实现使用日志文件修改时间，且中止也归入结束提示，**不能据此认定任务成功**。
@@ -113,6 +115,10 @@ idf.py -p COM3 flash monitor
 
 ## 版本管理与来源
 
-实际项目已初始化本地 Git，分支 `main`，首次基线提交 `ae4385d`，目前未配置远程仓库。`.gitignore` 排除构建产物、下载依赖、迁移备份和常见凭据文件。保留 `sdkconfig.defaults` 和 `dependencies.lock`，本机生成的 `sdkconfig` 不提交。
+项目仓库：[EESheep/agent-desk](https://github.com/EESheep/agent-desk)，分支 `main`，首次基线提交 `ae4385d`。`.gitignore` 排除构建产物、下载依赖、迁移备份、原始会话日志和常见凭据文件。保留 `sdkconfig.defaults` 和 `dependencies.lock`，本机生成的 `sdkconfig` 不提交。
 
 活动采集思路参考 [codex-monitor](https://github.com/manuelsh/codex-monitor)，额度读取参考 [Waveshare codex-meter](https://github.com/waveshareteam/codex-meter)。并非把两个完整项目运行在 ESP32 上，也无需启动它们的 Web 服务。保留硬件驱动原有版权声明。账户凭据留在电脑，不发送给 ESP32。
+
+## 许可证
+
+本项目原创代码采用 [Apache-2.0](LICENSE)。第三方代码和依赖保留各自的版权与许可，包括驱动中的 CC0-1.0 声明；详见 [NOTICE](NOTICE) 和[驱动来源说明](firmware/board/UPSTREAM.md)。

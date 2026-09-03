@@ -1,0 +1,18 @@
+Agent Desk
+Copyright 2026 EESheep
+
+Original project code is licensed under the Apache License, Version 2.0.
+Third-party code retains its original copyright and license terms.
+
+The display driver is adapted from Waveshare's ESP32-S3-Touch-LCD-7
+examples:
+https://github.com/waveshareteam/ESP32-S3-Touch-LCD-7
+The upstream Apache-2.0 license is retained in
+firmware/board/LICENSE.waveshare. Source revision and local modifications
+are documented in firmware/board/UPSTREAM.md.
+
+Espressif initialization and driver code identified by CC0-1.0 SPDX
+notices retains those notices and terms.
+
+External dependencies retain their respective licenses. See the source
+distributions resolved by firmware/dependencies.lock.

@@ -1,3 +1,4 @@
+/* Modified for Agent Desk: ESP-IDF 6.1 I2C/RGB migration; see UPSTREAM.md. */
 /*
  * SPDX-FileCopyrightText: 2022 Espressif Systems (Shanghai) CO LTD
  *

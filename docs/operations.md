@@ -129,7 +129,7 @@ cd C:\Users\ZHUOZhuang\Documents\lvgl-dev
 & 'C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe' .\tools\codex_status_probe.py --self-test
 ```
 
-`tests/test_model.c` 是主机 C 测试，但有两条旧 Attention 规则断言尚未更新，当前不能将其当作通过的回归测试。详见[验证记录](validation.md)。安装可运行 Windows 程序的主机 C 编译器与 CMake 后，可复现：
+`tests/test_model.c` 的旧 Attention 断言已修正，并增加来源解析、筛选、同名 ID、完成提醒与来源可用性测试。本机尚未运行独立主机 C 测试；固件启动自检已在设备验证关键来源/解析逻辑。详见[验证记录](validation.md)。安装可运行 Windows 程序的主机 C 编译器与 CMake 后，可执行：
 
 ```powershell
 cmake -S tests -B build-host
@@ -141,7 +141,7 @@ ctest --test-dir build-host -C Debug --output-on-failure
 
 ## 7. 本地 Git
 
-实际项目目录是唯一维护基准；`ChatGPT\LVGL develop\lvgl-dev-staging` 是此前工具权限下的编辑/构建暂存目录，不是另一个应同时维护的产品版本。重新构建时以实际项目源码为准，不混用暂存目录的旧产物。
+实际项目目录是唯一维护基准；此前 `ChatGPT\LVGL develop\lvgl-dev-staging` 和重复 docs 已移到 `C:\Users\ZHUOZhuang\Documents\lvgl-dev-cleanup-20260903` 归档，不再维护。当前直接在实际项目构建，不混用归档产物。
 
 ```powershell
 cd C:\Users\ZHUOZhuang\Documents\lvgl-dev
@@ -158,4 +158,4 @@ git diff --cached --stat
 git commit -m 'Document setup and serial auto-detection'
 ```
 
-首次基线为 `ae4385d`。目前无远程仓库、无自动提交；本地 Git 不等同于异地备份。不要提交账户密钥、原始会话日志或带私密内容的 JSON 输出；`.gitignore` 只是第一道过滤，不替代提交前检查。构建产物和迁移备份仍保留在磁盘，只是不纳入 Git。
+首次基线为 `ae4385d`。远程仓库为 [EESheep/agent-desk](https://github.com/EESheep/agent-desk)，SSH 地址为 `git@github.com:EESheep/agent-desk.git`。没有自动提交或自动推送；提交后使用 `git push` 同步远程。不要提交账户密钥、原始会话日志或带私密内容的 JSON 输出；`.gitignore` 只是第一道过滤，不替代提交前检查。构建产物和迁移备份仍保留在磁盘，只是不纳入 Git。

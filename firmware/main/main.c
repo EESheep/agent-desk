@@ -55,9 +55,13 @@ static bool append_task(char *line, panel_snapshot_t *out)
     char *title = strtok_r(NULL, "\t", &save);
     char *state = strtok_r(NULL, "\t", &save);
     char *approval = strtok_r(NULL, "\t", &save);
+    char *source_name = strtok_r(NULL, "\t", &save);
+    panel_source_t source = PANEL_CODEX; /* Old bridges omit the optional source field. */
     if (!id || !title || !state || !approval || strtok_r(NULL, "\t", &save) ||
+        (source_name && !panel_parse_source(source_name, &source)) ||
         (strcmp(approval, "-1") && strcmp(approval, "0") && strcmp(approval, "1"))) return false;
     panel_task_t *task = &out->tasks[out->task_count];
+    task->source = source;
     if (!decode_hex(task->id, sizeof(task->id), id) || !task->id[0] ||
         !decode_hex(task->title, sizeof(task->title), title)) return false;
     task->state = !strcmp(state, "1") ? PANEL_IDLE : !strcmp(state, "2") ? PANEL_RUNNING :
@@ -70,7 +74,7 @@ static bool append_task(char *line, panel_snapshot_t *out)
                          task->state == PANEL_WAITING_INPUT ? "Waiting for your input on the computer" :
                          task->state == PANEL_COMPLETED ? "Task completed recently" :
                          task->state == PANEL_IDLE ? "No active turn detected" :
-                         task->state == PANEL_FAILED ? "Codex reported a system error" :
+                         task->state == PANEL_FAILED ? "Source reported a system error" :
                          "No activity state available";
     snprintf(task->detail, sizeof(task->detail), "%s", detail);
     out->task_count++;
@@ -84,8 +88,12 @@ static bool append_card(char *line, panel_snapshot_t *out)
     char *title = strtok_r(line + 5, "\t", &save);
     char *value = strtok_r(NULL, "\t", &save);
     char *detail = strtok_r(NULL, "\t", &save);
-    if (!title || !value || !detail || strtok_r(NULL, "\t", &save)) return false;
+    char *source_name = strtok_r(NULL, "\t", &save);
+    panel_source_t source = PANEL_CODEX;
+    if (!title || !value || !detail || strtok_r(NULL, "\t", &save) ||
+        (source_name && !panel_parse_source(source_name, &source))) return false;
     panel_card_t *card = &out->cards[out->card_count];
+    card->source = source;
     if (!decode_hex(card->title, sizeof(card->title), title) ||
         !decode_hex(card->value, sizeof(card->value), value) ||
         !decode_hex(card->detail, sizeof(card->detail), detail)) return false;
@@ -104,6 +112,20 @@ static void parser_self_test(void)
     assert(parsed.task_count == 2 && !strcmp(parsed.tasks[0].title, "Task") &&
            !parsed.tasks[0].approval_known && parsed.tasks[1].needs_approval &&
            parsed.card_count == 1 && !strcmp(parsed.cards[0].value, "78%"));
+    assert(parsed.tasks[0].source == PANEL_CODEX && parsed.cards[0].source == PANEL_CODEX);
+    char kimi[] = "TASK\t6f6e65\t4b696d69\t4\t0\tkimi";
+    char dsh[] = "CARD\t445348\t4f4b\t54657374\tdsh";
+    char invalid[] = "TASK\t78\t78\t2\t0\tother";
+    assert(append_task(kimi, &parsed) && append_card(dsh, &parsed));
+    assert(!append_task(invalid, &parsed));
+    assert(panel_find_task(&parsed, PANEL_CODEX, "one") == &parsed.tasks[0]);
+    assert(panel_find_task(&parsed, PANEL_KIMI, "one") == &parsed.tasks[2]);
+    assert(panel_task_matches(&parsed.tasks[2], PANEL_SOURCE_COUNT));
+    assert(!panel_task_matches(&parsed.tasks[2], PANEL_CODEX));
+    assert(panel_task_needs_attention(&parsed.tasks[2]));
+    assert(panel_completion(&parsed) == &parsed.tasks[2]);
+    assert(panel_source_available(&parsed, PANEL_DSH));
+    ESP_LOGI(TAG, "Parser/source/filter self-test OK");
 }
 
 static void bridge_task(void *argument)

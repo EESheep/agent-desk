@@ -1,4 +1,5 @@
 #ifndef _RGB_LCD_H_
+/* Modified for Agent Desk: ESP-IDF 6.1 shared I2C bus; see UPSTREAM.md. */
 #define _RGB_LCD_H_
 
 #include <stdint.h>

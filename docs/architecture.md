@@ -1,6 +1,6 @@
 # 架构与数据协议
 
-核对日期：2026-09-03。本文描述当前源码；早期模拟审批、Wi-Fi 和多软件设计不代表已实现能力。使用入口见 [README](../README.md)。
+核对日期：2026-09-03。本文描述当前源码：多软件显示与筛选已实现，真实数据仍只有 Codex；早期模拟审批、Wi-Fi 和其他软件适配器不代表已实现能力。使用入口见 [README](../README.md)。
 
 ## 数据流
 
@@ -17,7 +17,7 @@
 - `firmware/board` 负责 RGB LCD、GT911、CH422G 和背光，不采集 Codex 数据。
 - `main.c` 在有效 END 后持 adapter 锁替换快照，LVGL 每秒定时维护数据年龄。
 - `panel_model.{h,c}` 为固定大小的数据模型；保留模拟函数和审批字段，但当前 `app_main` 不启动模拟源。
-- `panel_ui.{h,c}` 渲染三页及详情。按会话 ID 绑定详情，刷新保留页面和滚动位置；会话从最新列表消失时提示不可用，不判定为完成。
+- `panel_ui.{h,c}` 渲染来源筛选、全局提醒、三页及详情。按来源 + 会话 ID 绑定详情，防止不同软件的同名 ID 串页；按来源和页面分别保留滚动位置。会话从最新列表消失时提示不可用，不判定为完成。仅年龄变化时只更新顶栏和提醒，不销毁列表触控目标。
 
 板卡开关标签为 UART1，源码外设为 `UART_NUM_0`；两者命名不是同一层级，不应因标签而改成 `UART_NUM_1`。
 
@@ -50,10 +50,11 @@ FAILED 仅对应接口 `systemError`，不从工具失败日志推导；等待�
 ## 计数与视觉口径
 
 - Attention 包含 WAITING INPUT、COMPLETED、FAILED。
-- 顶部 `running` 只计 RUNNING；`completed` 单独计数；`action` 计 WAITING INPUT 和 FAILED。
+- All / Codex / Kimi / DSH 筛选同时作用于会话、顶部计数和 Information；顶部 `running` 只计 RUNNING，`completed` 单独计数，底部 Attention 显示当前来源的关注数量。
 - Information 的 ACTIVITY 把 `active` 和 `waiting` 都算作 RUNNING，有等待输入时可能与顶部计数不同；这是当前已知口径差异。
 - 完成项绿色，等待项黄色，失败项红色，运行项青色；完成标记还有勾选符号，不只靠颜色。
-- 当前无“已读完成通知”存储、跨页完成横幅或自动跳页。两分钟规则来自主机，不是设备倒计时。
+- 全局提醒条不受来源或页面影响，优先选取快照中第一个 COMPLETED（沿用上游更新排序），无完成时选首个需关注项；无数据或过期警告优先于旧任务提醒。不存储“已读”状态，不自动跳页，也不伪造完成时间。两分钟规则仍来自主机。
+- Information 的 All 概览逐一显示 Codex / Kimi / DeepSeek Harness；只有快照中出现该来源任务或卡片时才标为 DATA RECEIVED，否则 NOT CONNECTED。选中来源后显示其卡片。该标记表示收到过当前快照数据，不是独立软件进程探活；新鲜度仍以顶部全局状态为准。
 - 标题仅保留 ASCII 可打印部分并附 ID 前 8 位，无 ASCII 时显示 `Codex task`。详情是通用状态说明，不传聊天正文或真实回复摘要。
 
 ## 额度
@@ -81,12 +82,14 @@ ASCII 行协议，文本字段先编码 UTF-8 再转十六进制。以下 `<TAB>
 
 ```text
 BEGIN
-TASK<TAB>id_hex<TAB>title_hex<TAB>state<TAB>legacy_approval
-CARD<TAB>title_hex<TAB>value_hex<TAB>detail_hex
+TASK<TAB>id_hex<TAB>title_hex<TAB>state<TAB>legacy_approval[<TAB>source]
+CARD<TAB>title_hex<TAB>value_hex<TAB>detail_hex[<TAB>source]
 END
 ```
 
 TASK、CARD 可重复。BEGIN 清空待提交快照，END 发布；无效记录或超长行丢弃本次接收，保留旧快照，下一次 BEGIN 重新同步。没有协议版本、校验和、请求 ID 或可靠重传。
+
+方括号表示可省略字段，不是字面字符。source 为未编码的 ASCII `codex`、`kimi` 或 `dsh`；未知来源拒绝接收。省略时默认 Codex，兼容当前 Python 桥接（仍发送旧格式）。来源存在任务/卡片便可参与筛选，但这不等于已经有 Kimi/DSH 数据采集器。
 
 状态编码：`1=IDLE`、`2=RUNNING`、`3=WAITING INPUT`、`4=COMPLETED`、`5=FAILED`，其他值显示 UNKNOWN。
 
@@ -112,8 +115,8 @@ TASK、CARD 可重复。BEGIN 清空待提交快照，END 发布；无效记录�
 
 登录凭据不发往设备；传输内容为 ID、显示标题、状态、额度与说明。电脑端仍读取本地会话日志；直接 JSON 输出包含原始标题，分享前需脱敏。USB 协议没有鉴权/加密，只适用于可信本地连接，不能直接暴露到网络。
 
-## 多软件扩展（未实现）
+## 多软件扩展边界
 
 延续电脑采集、统一快照、ESP32 显示。Kimi Code CLI / DeepSeek Harness 接入前先核对实际版本和可用事件/日志。
 
-建议增加软件来源和来源内会话 ID，避免冲突；统一列表默认显示全部，按软件筛选。颜色统一表示状态，品牌用文字区分；额度按软件独立展示，无接口的数据明确标为未接入。全局提醒横幅、通知已读和中文字体需后续实现，不属于当前固件。
+已增加来源字段和来源内 ID 区分、统一列表筛选、全局提醒条及按来源展示的信息页；颜色统一表示状态，来源用文字区分。全局容量仍是 8 个任务 / 4 张卡片，不是每个软件各有一份。尚未实现 Kimi/DSH 适配器、各来源独立心跳、通知已读或中文字体；无接口的数据不能伪造。
