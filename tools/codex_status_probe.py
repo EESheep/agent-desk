@@ -24,6 +24,22 @@ def find_codex(explicit=None):
     raise SystemExit("codex executable not found; pass --codex PATH")
 
 
+def find_panel_port(ports=None):
+    if ports is None:
+        from serial.tools import list_ports
+        ports = list_ports.comports()
+    ports = list(ports)
+    # ponytail: match the observed CH343 USB ID, not a firmware identity;
+    # multiple matching adapters require --port instead of guessing.
+    candidates = [p for p in ports if (p.vid, p.pid) == (0x1A86, 0x55D3)]
+    if len(candidates) == 1:
+        return candidates[0].device
+    inventory = "; ".join(f"{p.device}: {p.description}" for p in ports) or "none"
+    reason = "Multiple CH343 adapters found" if candidates else "No matching CH343 adapter found"
+    raise SystemExit(f"{reason}. Connect the panel's UART1 USB port or specify --port COMx. "
+                     f"Available ports: {inventory}")
+
+
 def normalize(thread, rollout_state="idle"):
     status = thread.get("status") or {"type": "unknown"}
     flags = status.get("activeFlags") or []
@@ -179,6 +195,9 @@ def snapshot_wire(tasks, usage=None):
 
 def send_serial(port, codex, limit, watch, interval):
     import serial  # Already installed with ESP-IDF/esptool; no extra dependency.
+    if port.lower() == "auto":
+        port = find_panel_port()
+        print(f"Auto-selected CH343 serial port: {port}", flush=True)
     connection = serial.Serial()
     connection.port, connection.baudrate, connection.timeout = port, 115200, 0.2
     connection.dtr = connection.rts = False
@@ -201,6 +220,21 @@ def send_serial(port, codex, limit, watch, interval):
 
 
 def self_test():
+    from types import SimpleNamespace
+    board = SimpleNamespace(device="COM7", vid=0x1A86, pid=0x55D3, description="CH343")
+    other = SimpleNamespace(device="COM3", vid=None, pid=None, description="Other serial port")
+    assert find_panel_port([other, board]) == "COM7"
+    board.device = "COM12"
+    assert find_panel_port([board]) == "COM12"
+    second = SimpleNamespace(device="COM8", vid=0x1A86, pid=0x55D3, description="CH343")
+    for ports, reason in [([], "No matching"), ([other], "No matching"),
+                          ([board, second], "Multiple")]:
+        try:
+            find_panel_port(ports)
+        except SystemExit as error:
+            assert reason in str(error) and "--port" in str(error)
+        else:
+            raise AssertionError("Ambiguous or missing port must not be auto-selected")
     active = normalize({"id": "t1", "name": "Build", "status": {
         "type": "active", "activeFlags": ["waitingOnApproval"]}})
     assert active == {"id": "t1", "title": "Build", "status": "active", "updatedAt": None}
@@ -215,18 +249,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--codex", help="path to codex executable")
     parser.add_argument("--limit", type=int, default=8)
-    parser.add_argument("--port", help="send snapshot to the panel, for example COM3")
-    parser.add_argument("--watch", action="store_true", help="refresh continuously (requires --port)")
+    parser.add_argument("--port", help="send snapshot to COMx or auto-detect with 'auto'")
+    parser.add_argument("--watch", action="store_true", help="refresh continuously; auto-detect port if omitted")
     parser.add_argument("--interval", type=float, default=10.0)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
         self_test()
         print("self-test OK")
-    elif args.watch and not args.port:
-        parser.error("--watch requires --port")
-    elif args.port:
-        send_serial(args.port, find_codex(args.codex), max(1, min(args.limit, 8)),
+    elif args.port or args.watch:
+        send_serial(args.port or "auto", find_codex(args.codex), max(1, min(args.limit, 8)),
                     args.watch, max(2.0, args.interval))
     else:
         print(json.dumps(probe(find_codex(args.codex), max(1, min(args.limit, 100))),

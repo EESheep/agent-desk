@@ -8,7 +8,7 @@ Based on `examples/ESP-IDF/09_lvgl_v9_demo/components/waveshare_rgb_lcd_port.{c,
 Keep `LICENSE.waveshare` and source SPDX notices. Do not substitute the 7B or 7C driver.
 
 GT911 is enabled in this exact upstream header. The old Wiki excerpt showing default 0 is not the current source default.
-Driver keeps the upstream RGB timings, GPIO mapping and CH422G reset sequence; actual hardware operation has not yet been tested.
+Driver keeps the upstream RGB timings, GPIO mapping and CH422G reset sequence. Basic display and touch initialization have since been tested on the device; see [validation records](../../docs/validation.md) for the tested scope and remaining interaction checks.
 
 ## ESP-IDF 6.1 migration (2026-09-02)
 

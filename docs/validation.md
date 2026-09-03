@@ -1,67 +1,72 @@
-# ESP-IDF 6.1 迁移验证记录
+# 验证记录与已知限制
 
-日期：2026-09-02
+更新：2026-09-03。本页区分历史记录、代码核查、实际运行和用户目视，不将编译成功等同于产品全部验收。
 
-- 工具链：ESP-IDF v6.1，Xtensa GCC 15.2.0，Python 3.13.9，esptool 5.3.1。
-- 直接依赖：LVGL 9.5.0、esp_lvgl_adapter 0.5.2、esp_lcd_touch_gt911 1.2.1。完整依赖已锁定于 `firmware/dependencies.lock`。
-- `idf.py -C firmware build`：完整构建通过（1980 个应用构建步骤，加引导程序）。
-- `tools/build.ps1`：增量构建通过；生成 bootloader、partition-table、desk_panel.bin 和 ELF。
-- 配置核对：ESP32-S3、8 MB Flash、OPI PSRAM 80 MHz、UART0/115200、LVGL FreeRTOS 后端。
-- GPIO 核对：迁移前后 RGB 引脚映射完全一致。触控复位字节序列保持不变。
-- `esptool image-info build/desk_panel.bin`：芯片 ESP32-S3、ESP-IDF v6.1，镜像 checksum 和 validation hash 均 valid。
-- 应用镜像：644032 字节（0x9d3c0），3 MiB 分区仍有约 80% 空余。
-- 引导程序：0x5820 字节，未超过 0x8000 分区表地址之前的空间。
-- `desk_panel.bin` SHA256：`ad0dc00a207c01cf062b97f41eb18e651ddff577a4ed3903cd0e34bfd756ec38`。
-- 链接报告静态 DIRAM 使用 89842 字节；不包含运行时显示帧缓冲、任务栈等动态分配，不能据此判断运行时峰值内存。
+## 当前版本记录
 
-## 构建警告
+| 项目 | 证据与结论 |
+| --- | --- |
+| ESP-IDF 6.1 / LVGL 9.5.0 | 完整及增量构建已通过；adapter 0.5.2，GT911 锁定 1.2.1，完整版本见 dependencies.lock |
+| 目标硬件 | ESP32-S3 revision v0.2；此前实测 Flash 16 MB、PSRAM 8 MB，镜像保守配置 8 MB Flash |
+| 基础显示 | 用户已确认画面正常、标签页可切换 |
+| 真实任务与额度 | 桥接已获取真实任务和额度；此前设备连续三轮回报 `REAL snapshot tasks=1 cards=4`，用户确认状态可见 |
+| 完成提醒视觉修改 | `panel_ui.c` 更新后构建、烧录和哈希校验成功；绿色卡片、勾选徽标和顶部 completed 计数已在源码实现 |
+| 最近一次完成视觉版本 | 应用 663616 字节（0xa2040），3 MiB 分区剩余约 79%；记录来自该次构建，不保证与未来产物相同 |
+| 自动串口自检 | 已覆盖唯一 CH343、COM 号变化、无设备、不匹配及多个候选；`--self-test` 通过 |
+| 自动串口实机枚举 | 已识别 CH343 `1A86:55D3` 为 COM3 |
+| 自动选择后的实际打开 | 验证时 COM3 已被现有桥接占用，出现拒绝访问；未停止用户进程，不能标记该次自动连接成功 |
+| Git 基线 | 本地 main，初始提交 ae4385d；不代表后续自动串口或文档修改已经提交 |
 
-完整配置时 ESP-IDF 自身的 BT/FATFS Kconfig 布尔默认值、重命名映射，以及 Wi-Fi/wpa_supplicant 私有头文件依赖产生通知/警告；它们未阻止构建，没有修改 SDK 源码或全局屏蔽警告。
-UART 默认选项下显式波特率设置有不可见配置提示，但生成配置已核实为 UART0/115200。
-Windows Unicode 提示通过构建助手的进程级 PYTHONUTF8 处理；大小报告使用 ASCII CSV 输出以避免嵌套 CMake 输出乱码。
+本次文档整理不重新烧录、不停止桥接，也不改变状态算法。新测试结果应追加到本页，不覆盖此前证据。
 
-## 首次硬件烧录与启动验证
+## 仍需验收
 
-- UART1/UART2 选择开关切换到 UART1 后，COM3 通信成功。此前端口可打开但没有芯片回应。
-- 实测芯片：ESP32-S3 revision v0.2，Flash 16 MB，PSRAM 8 MB。
-- 按用户要求不备份原设备固件，直接烧录；未修改 eFuse，未执行全片擦除。
-- 460800 baud 写入 bootloader（0x0）、partition-table（0x8000）、desk_panel.bin（0x10000），三个文件均通过写入哈希校验，随后复位。
-- 启动日志确认 ESP-IDF v6.1、PSRAM 80 MHz 及内存测试 OK，GT911 ID 0x39/0x31/0x31、配置版本 88，LVGL adapter 和触控输入注册成功。
-- 约 18 秒串口观察窗口内，应用在 uptime=0/8/16 秒报告 tasks=4、approvals=1/0/1，未观察到崩溃或重启。
-- 当前镜像仍按兼容性配置使用 8 MB Flash；硬件实际 16 MB，启动时会提示容量差异并使用镜像配置的 8 MB，不影响当前应用。后续扩容/OTA 时再调整配置和分区。
-- LVGL 提示未启用手势识别，当前仅支持单点指针事件。
+- 最新完成配色在实屏上的对比度、徽标显示和远距离可读性，需目视确认。
+- 详情页的标题/状态/空白点击、滚动、Back、刷新保持与切页组合，需要完整实机回归记录；用户确认可显示状态不等于全部交互已验收。
+- 释放串口后，以 `--watch` 自动选端口并收到 `panel confirmed` 的端到端验证。
+- 多个真实会话及多个 CH343 设备场景；目前歧义选择已用模拟枚举对象自测。
+- 断线/休眠/串口占用和 App Server 失败恢复。当前未实现自动恢复。
+- 长时间运行、运行时峰值内存、频繁触控和刷新下的稳定性。
+- WAITING INPUT / FAILED 的桌面 App 实时可见性，不可只用构造数据证明。
 
-## 会话详情页更新
+## 已知实现限制
 
-- 用户已确认上一版画面正常，三个标签可正常切换。
-- 新增 Sessions / Attention 会话卡片点击入口、固定 Back 按钮、可滚动的完整标题/摘要、会话 ID、状态和审批提示。
-- 使用会话 ID 跟踪选择；快照刷新仅更新现有详情控件，保持详情页与滚动位置。会话从快照消失时显示不可用提示，不误判为完成。
-- 修正装饰子控件的点击拦截，滚动容器保留触摸命中；返回列表恢复原标签和滚动位置。
-- ESP-IDF 6.1 增量构建通过。新应用镜像 645872 字节（0x9daf0），3 MiB 应用分区剩余 79%。
-- 新应用 SHA256：`6e6d99bd152880953c485551b34c8d8e4e2cfbd937a18001bdfddbe7ec186b2e`；以上首次烧录段落之前的镜像大小/哈希为旧版历史记录。
-- COM3 上三个固件文件均写入成功并通过哈希校验；启动日志确认新 ELF 哈希前缀 `3060fbcfa`，PSRAM 测试、GT911 与 LVGL 初始化正常。
+1. 日志状态是推导值：时间依据文件 mtime，中止也归入 COMPLETED；持续运行但长期无日志的任务可能变为 IDLE。
+2. 只取最近更新的一页，最多向设备发送 8 个会话，不代表全部任务。
+3. ACTIVITY 卡把 waiting 计入 RUNNING，顶部 running 不包含 waiting，存在口径差异。
+4. 串口选择只匹配 CH343 型号，不是固件握手；没有运行中自动重连或开机自启。
+5. 无完整中文字库，实际回复正文不传到设备。
+6. 无 Wi-Fi、OTA、Kimi / DeepSeek Harness 接入或审批操作。
 
-### 详情页实机验收（待用户确认）
+## C 模型测试已过期
 
-1. 在 Sessions 点击任意卡片的标题、状态或空白处，进入对应会话；Back 返回 Sessions。
-2. 在 Attention 打开 Codex status bridge，等待至少两个 8 秒刷新周期；仍停留在该会话，审批提示和状态更新；Back 返回 Attention。
-3. 详情页直接切换 Information 或 Sessions，能够退出详情页并正常展示目标标签。
-4. 对超出可视区域的详情上下滑动，Back 始终可见；刷新后仍在当前详情页。当前摘要只是模型已有摘要，不是聊天记录。
+`tests/test_model.c` 仍沿用旧审批规则。源码核查发现：
 
-## 尚未验证
+- phase 0 的 `tasks[1]` 为 RUNNING + needs_approval，旧断言期望它需要 Attention；当前判定不使用审批标志，应为 false。
+- phase 0 的 `tasks[3]` 为 COMPLETED，旧断言期望它不需要 Attention；当前判定应为 true。
 
-- 新增详情页的实际布局、点击/滚动/返回仍需用户目视及操作确认；编译和启动日志不等于交互已验证。
-- 未验证长期稳定性、运行时峰值内存。
-- 独立 C 模型测试源码仍在 `tests/`，本轮没有在主机上执行；固件编译通过不等于这些单元测试通过。
-- 未接入真实 Codex、Wi-Fi、中文字体或 OTA。
+本轮未执行主机 C 测试，未修改这些断言，不能声称测试通过。运行方法见 [operations.md](operations.md)。固件中的解析器启动自检与此主机测试不是同一套测试；桥接 Python 自检通过也不能覆盖它。
 
-`desk_panel.bin` 是 0x10000 的应用镜像，不是可写到 0x0 的合并镜像；完整烧录应使用配套 bootloader 和分区表。
+## 手动回归清单
 
-## 真实任务列表 UART 接入
+1. Python `--self-test` 成功；不接设备也应能运行。
+2. 枚举正确串口，关闭占用程序，`--watch` 输出自动选中的端口。
+3. 至少三个刷新周期收到有效快照，屏幕进入 SYNCED。
+4. 发起 Codex 回合，观察 RUNNING；结束后观察绿色 COMPLETED，再观察约两分钟后的 IDLE。记录中止、长时间无日志等边界，不把提示当成功证明。
+5. Sessions / Attention 可打开详情、Back 返回；刷新不跳出详情；Information 能切换。
+6. 停止桥接后等待超过 15 秒，观察 STALE DATA；重启桥接恢复。
+7. 核对 CODEX LEFT 和 RESET IN 对应同一 primary 窗口；接口缺字段时允许 UNKNOWN。
 
-- 电脑端探针自检通过，使用官方 App Server `thread/list` 读取到真实任务。
-- 固件改用无额外依赖的 BEGIN/TASK/END 行协议；文本十六进制编码，限制 4095 字节、8 个任务。
-- 首次实机启动发现解析器自检的局部快照导致 main 栈溢出；改为静态测试缓冲区后重新编译、烧录，启动稳定并返回 `app_main`。
-- 桥接以 COM3/115200 每 10 秒同步；连续三次收到设备确认 `REAL snapshot tasks=1 approvals=0`。
-- 当前真实任务来自独立 App Server，状态为 `notLoaded`，固件显示 UNKNOWN / APPROVAL UNKNOWN，不声称获得桌面实时审批。
-- 当前未嵌入中文字库；屏幕使用标题中的 ASCII 部分加任务 ID，避免中文字形显示为方框。
+## 历史迁移记录（2026-09-02）
+
+以下为早期版本，不是当前功能声明：
+
+- 工具链 ESP-IDF 6.1、Xtensa GCC 15.2.0、Python 3.13.9、esptool 5.3.1；完整应用构建约 1980 个步骤。
+- 首版迁移镜像 644032 字节（0x9d3c0），SHA256 `ad0dc00a207c01cf062b97f41eb18e651ddff577a4ed3903cd0e34bfd756ec38`；bootloader 0x5820 字节，静态 DIRAM 89842 字节，不含全部动态分配。
+- UART 选择切换到 UART1 后通信成功。按用户要求不备份原固件，直接烧录 bootloader / partition-table / 应用并校验哈希；未改 eFuse，未全片擦除。
+- 启动日志确认 PSRAM 测试、GT911 和 LVGL 初始化；早期 18 秒观察为 4 个模拟任务，每 8 秒切换模拟审批。这不是当前默认数据源。
+- 详情页版本 645872 字节（0x9daf0），SHA256 `6e6d99bd152880953c485551b34c8d8e4e2cfbd937a18001bdfddbe7ec186b2e`，写入校验通过。
+- 首次 UART 真实列表版本遇到解析器自检局部快照造成 main 栈溢出；改静态测试缓冲区后稳定启动，并收到 `tasks=1 approvals=0` 确认。
+- 当时独立服务返回 notLoaded，曾显示 UNKNOWN / APPROVAL UNKNOWN。后续引入日志推导与额度卡片，并移除审批显示；旧说明不再适用。
+
+历史构建有 SDK Kconfig、组件依赖和 Unicode 输出警告，未阻止构建；未修改 SDK 源码或全局屏蔽警告。构建助手用进程级 PYTHONUTF8 和 CSV 大小报告处理输出编码。实际 Flash 16 MB 与当前镜像 8 MB 配置不同，属于保守容量选择，不表示可直接启用 OTA。

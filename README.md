@@ -1,88 +1,118 @@
-# Desk Panel / ESP32-S3-Touch-LCD-7
+# Desk Panel：Codex 桌面状态屏
 
-开发目录：`C:\Users\ZHUOZhuang\Documents\lvgl-dev`
+把电脑上的 Codex 会话活动和账户额度显示到 **Waveshare ESP32-S3-Touch-LCD-7（800×480）**。电脑读取数据，ESP32 负责 LVGL 界面与触控；这是只读提醒屏，不执行审批，也不在设备上运行 Codex。
 
-用于 800×480 Waveshare ESP32-S3-Touch-LCD-7 的 LVGL 状态屏基础工程。
-已适配 **ESP-IDF 6.1 + LVGL 9.5.0**，通过 UART 显示真实 Codex 会话、本地活动提醒和官方额度。验证记录见 `docs/validation.md`。
+核对日期：2026-09-03。实际开发目录：`C:\Users\ZHUOZhuang\Documents\lvgl-dev`。
 
-## 界面
+## 当前功能
 
-- Sessions：会话标题和由本地 rollout 推导的 RUNNING / IDLE / COMPLETED 状态。
-- Attention：显示最近完成、等待输入和失败的会话。
-- Information：活动数量、Codex 剩余额度、重置倒计时和连接状态。
-- 顶部显示 WAITING / SYNCED / STALE DATA。
-- 初版使用英文字体；中文标题暂取其中可显示的 ASCII 部分并附任务 ID。
+- 显示最近更新的最多 8 个本地 Codex 会话，支持列表滚动、点击详情和返回。
+- 根据本地日志提示运行中、最近结束和空闲；完成项使用绿色卡片和 `✓ COMPLETED` 标记。
+- 显示 Codex 剩余额度、额度周期、重置倒计时和连接信息。
+- 通过 UART1 USB 同步；启动时自动查找 CH343 串口，不依赖固定 COM 号。
+- 超过约 15 秒未收到快照时显示 `STALE DATA`，保留旧数据供参考。
 
-## 运行真实任务桥接
+**尚未实现**：开机自启、运行中断线重连、Wi-Fi、OTA、完整中文字体、Kimi / DeepSeek Harness 接入。多软件界面只有设计预览。等待输入和失败的显示分支已存在，但不保证能读取桌面 App 中对应的实时状态。
 
-保持 UART1 Type-C 连接，关闭其他占用 COM3 的串口软件，然后运行：
+## 快速开始：设备已经烧录好
+
+1. 用数据线连接板载 USB 转串口接口，UART1/UART2 选择开关置于 **UART1**，不要接成 ESP32 原生 USB 接口。
+2. 确保本机 Codex 可运行且已登录。关闭串口调试助手、烧录监视器和重复的桥接窗口，同一串口只运行一个桥接。
+3. 打开普通 PowerShell，执行本机已验证的命令：
 
 ```powershell
-C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe .\tools\codex_status_probe.py --port COM3 --watch
+cd C:\Users\ZHUOZhuang\Documents\lvgl-dev
+& 'C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe' .\tools\codex_status_probe.py --watch
 ```
 
-脚本每 10 秒读取任务列表和官方额度，并按 `codex-monitor` 的思路检查本地 rollout：最近 15 分钟内存在尚未结束的 turn 显示 RUNNING，结束后 2 分钟显示 COMPLETED，其余显示 IDLE。额度口径沿用 `Waveshare codex-meter` 的 `account/rateLimits/read`。这是只读提醒屏，不读取或执行审批。
+预期输出（端口号和任务数以实际为准）：
 
-## 构建
+```text
+Auto-selected CH343 serial port: COM3
+sent 1 real Codex task(s) to COM3
+panel confirmed: I (...) desk_panel: REAL snapshot tasks=1 cards=4
+```
 
-本机已安装 **ESP-IDF v6.1**，位置为 `C:\esp\v6.1\esp-idf`；工具在 `C:\Espressif\tools`。
-优先从工程根目录运行构建助手（仅编译与统计大小，不烧录）：
+保持窗口运行；`Ctrl+C` 停止。默认每轮等待 10 秒，另加 Codex 读取与串口处理耗时，并非严格每 10 秒一次。重启电脑或关闭桥接后需要重新执行；**自动找串口不等于开机自启**。
+
+上面的 Python 路径属于本机 ESP-IDF 安装。其他电脑需使用安装了 `pyserial` 的 Python，并提供可运行的 Codex，详见[运行与维护](docs/operations.md)。
+
+## 页面与状态
+
+| 页面 | 内容 |
+| --- | --- |
+| Sessions | 本次收到的会话，需关注项排在前面；点击进入详情 |
+| Attention | 最近结束、等待输入或失败的会话，不是审批列表 |
+| Information | ACTIVITY、CODEX LEFT、RESET IN、LINK 四张卡片 |
+
+顶部 `sessions` 为本次列表数量，`running` 为运行中，`completed` 为最近结束，`action` 为等待输入或失败。`action` 不含完成项，Attention 页面包含完成项。
+
+- `RUNNING`：日志推导的活动提醒，不是桌面 App 的权威实时状态。
+- `COMPLETED`：最近回合结束提示，通常约两分钟后回到 `IDLE`。实现使用日志文件修改时间，且中止也归入结束提示，**不能据此认定任务成功**。
+- `IDLE`：未检测到活动回合，不代表整个项目已完成。
+- `SYNCED`：刚收到串口快照，不代表上游状态一定完整；`STALE DATA` 表示快照已过期。
+
+`CODEX LEFT` 例如 `78%` 表示所选额度窗口约剩 78%；`prolite / 10080 min window` 中前者是接口返回的套餐标识，后者为 7 天窗口。`RESET IN 3d 13h` 是该窗口距离重置的剩余时间，按整小时向下取整，不是任务剩余时间。当前仅显示 `primary` 窗口。`LINK: USB UART` 是链路类型说明，不是独立连接探测。
+
+状态判定边界、计数口径和额度来源详见[架构说明](docs/architecture.md)。
+
+## 常用命令
+
+在项目根目录执行；以下 `python` 请替换为快速开始中的 Python 路径，或在对应虚拟环境内运行。
+
+```powershell
+python tools/codex_status_probe.py --watch                  # 自动识别，持续同步
+python tools/codex_status_probe.py --port COM3 --watch      # 手动指定串口
+python tools/codex_status_probe.py --port auto              # 自动识别，仅推送一次
+python tools/codex_status_probe.py --watch --limit 4        # 最近更新的 4 个会话
+python tools/codex_status_probe.py                         # 只输出 JSON，不连接串口
+python tools/codex_status_probe.py --self-test             # 无需设备/登录的自检
+python -m serial.tools.list_ports -v                      # 枚举串口，不打开串口
+```
+
+自动选择条件：USB VID:PID 为 `1A86:55D3`，并且只有一个匹配端口。无匹配或多个同型号设备时会列出端口并退出，可用 `--port COMx` 指定。匹配的是串口型号，不是固件身份，不会自动试写其他串口。
+
+## 开发与烧录
+
+本机工具链：**ESP-IDF 6.1、LVGL 9.5.0、esp_lvgl_adapter 0.5.2**。精确依赖保存在 [dependencies.lock](firmware/dependencies.lock)。目标为 LCD-7，不要使用 7B/7C 驱动。
+
+普通 PowerShell 中从项目根目录构建：
 
 ```powershell
 .\tools\build.ps1
 ```
 
-或使用安装后的 ESP-IDF PowerShell 环境：
+脚本通过 EIM 注册表加载已安装的 v6.1 环境。若执行策略阻止脚本，可仅对此次进程放行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1
+```
+
+烧录前停止桥接和其他串口软件。打开 **EIM 提供的 ESP-IDF PowerShell**，执行（COM3 替换成当前端口）：
 
 ```powershell
 cd C:\Users\ZHUOZhuang\Documents\lvgl-dev\firmware
-idf.py --version
-idf.py build
-```
-
-构建会根据 `sdkconfig.defaults` 选择 ESP32-S3，不必每次执行 `set-target`。
-LVGL 固定 9.5.0，adapter 固定 0.5.2；`dependencies.lock` 保存已解析的精确依赖，应提交到版本控制。
-Windows 中文环境如有编码警告，只需在当前终端设置 `$env:PYTHONUTF8 = '1'`；构建助手已设置，无需更改系统语言。
-
-## 烧录（会覆盖当前应用固件）
-
-在烧录前关闭 SSCOM 的 COM3；确认板卡确实是 800×480 的 LCD-7 而非 7B。
-本机已确认设备为 ESP32-S3、16 MB Flash、8 MB PSRAM。关闭任务桥接和其他串口软件后执行：
-
-```powershell
 idf.py -p COM3 flash monitor
 ```
 
-`Ctrl+]` 退出串口监视器。调试 UART 为 115200 8N1。
-`build/desk_panel.bin` 是应用镜像，地址为 `0x10000`，不是可烧到 `0x00` 的合并整包；首次烧录应使用 `idf.py flash` 同时写入配套 bootloader 和分区表，不要把应用 bin 单独写到 `0x00`。
-项目采用 8 MB Flash 的保守配置和 3 MB 单应用分区，尚未启用 OTA；PSRAM 必须是 8 MB OPI。
-已迁移的驱动启用 GT911；CH422G 和触控共用新版 I2C 总线。不要改 USB/CAN 复用引脚来排查 UART 问题。
-迁移前的驱动/配置保存在 `migration-backup-idf5`，仅作参考备份，不参与构建。
+`Ctrl+]` 退出 monitor，再运行桥接。烧录会覆盖对应 Flash 分区；不要把 `desk_panel.bin` 单独写到 `0x0`，它是 `0x10000` 的应用镜像。完整步骤与排障见[运行与维护](docs/operations.md)。仅修改 Python 桥接不需要重新烧录。
 
-## 验收清单
+## 文档与源码入口
 
-1. 编译成功、没有未识别 Kconfig 配置项；记录 IDF 和锁文件版本。
-2. 启动日志中出现 `waiting for real Codex tasks on UART`。
-3. 屏幕无闪烁/偏色/错位；触控三个页签位置正确。
-4. 桥接脚本输出 `panel confirmed`，屏幕从 WAITING 切换为 SYNCED 并展示真实任务。
-5. 断开桥接 15 秒后显示 STALE DATA；Information 显示额度和重置倒计时。
+| 入口 | 用途 |
+| --- | --- |
+| [运行与维护](docs/operations.md) | 参数、启动、构建、烧录、故障排查、本地 Git |
+| [架构与数据协议](docs/architecture.md) | 状态推导、串口格式、容量、安全边界、扩展方案 |
+| [验证记录](docs/validation.md) | 已验证内容、历史版本、待验收项目与已知问题 |
+| [设备资料](docs/ESP32-S3-Touch-LCD-7/README.md) | 硬件与官方文档索引；早期设计明确标为历史资料 |
+| [驱动来源](firmware/board/UPSTREAM.md) | 上游提交、许可证与 IDF 6.1 迁移说明 |
+| [桥接脚本](tools/codex_status_probe.py) | 状态采集、自动串口识别、快照输出 |
+| [界面](firmware/main/panel_ui.c) | 页面、颜色、计数和触控交互 |
+| [模型](firmware/main/panel_model.h) | 字段长度、状态枚举、8 个会话与 4 张卡片的上限 |
+| [固件入口](firmware/main/main.c) | 初始化、串口解析、快照发布与过期计时 |
 
-## 扩展入口
+## 版本管理与来源
 
-- `firmware/main/panel_ui.c`：颜色、位置和交互。
-- `firmware/main/panel_model.h`：会话和信息卡片数据结构。
-- `firmware/main/panel_model.c`：模拟数据。
-- `docs/architecture.md`：分层、Codex 接口证据与未实现功能。
-- `docs/ESP32-S3-Touch-LCD-7`：之前整理的设备资料（历史摘要，驱动以 board/UPSTREAM.md 为准）。
+实际项目已初始化本地 Git，分支 `main`，首次基线提交 `ae4385d`，目前未配置远程仓库。`.gitignore` 排除构建产物、下载依赖、迁移备份和常见凭据文件。保留 `sdkconfig.defaults` 和 `dependencies.lock`，本机生成的 `sdkconfig` 不提交。
 
-## 不依赖设备的模型测试
-
-安装主机 C 编译器和 CMake 后，可以独立运行：
-
-```powershell
-cmake -S tests -B build-host
-cmake --build build-host
-ctest --test-dir build-host -C Debug --output-on-failure
-```
-
-交叉编译器不能直接运行 Windows 主机测试。独立测试的运行状态见 `docs/validation.md`；构建通过也不等同于实机验证。
+活动采集思路参考 [codex-monitor](https://github.com/manuelsh/codex-monitor)，额度读取参考 [Waveshare codex-meter](https://github.com/waveshareteam/codex-meter)。并非把两个完整项目运行在 ESP32 上，也无需启动它们的 Web 服务。保留硬件驱动原有版权声明。账户凭据留在电脑，不发送给 ESP32。
