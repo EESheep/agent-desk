@@ -1,7 +1,8 @@
-"""Send Codex task activity and quota snapshots to the desk panel."""
+"""Send Codex and Kimi Code task activity and quota snapshots to the desk panel."""
 
 import argparse
 import json
+import math
 import os
 import queue
 import shutil
@@ -92,6 +93,122 @@ def rollout_states(thread_ids, active_window=15 * 60, completed_window=2 * 60):
     return states
 
 
+def kimi_turn_state(session_dir, now, active_window=15 * 60, completed_window=2 * 60):
+    # ponytail: per-agent log freshness is a heuristic, not process liveness.
+    states = {"idle": 0, "completed": 1, "active": 2, "waiting": 3}
+    status, latest_mtime = "idle", None
+    try:
+        wires = list((session_dir / "agents").glob("*/wire.jsonl"))
+    except OSError:
+        return status, latest_mtime
+    for wire in wires:
+        pending_prompts, waiting, finished = set(), set(), False
+        try:
+            mtime = wire.stat().st_mtime
+            age = now - mtime
+            if age > active_window:
+                latest_mtime = max(latest_mtime or mtime, mtime)
+                continue
+            with wire.open(encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    kind, prompt_id = record.get("type"), record.get("promptId")
+                    interaction_id = record.get("id")
+                    if isinstance(prompt_id, str) and prompt_id:
+                        if kind == "turn.prompt":
+                            pending_prompts.add(prompt_id)
+                        elif kind in {"prompt.completed", "prompt.aborted"}:
+                            pending_prompts.discard(prompt_id)
+                            finished = True
+                    if isinstance(interaction_id, str) and interaction_id:
+                        if kind == "interaction.request":
+                            waiting.add(interaction_id)
+                        elif kind == "interaction.resolved":
+                            waiting.discard(interaction_id)
+        except (OSError, UnicodeError):
+            continue  # One disappearing/unreadable agent must not stop either source.
+        latest_mtime = max(latest_mtime or mtime, mtime)
+        agent_status = ("waiting" if waiting else "active" if pending_prompts else
+                        "completed" if finished and age <= completed_window else "idle")
+        if states[agent_status] > states[status]:
+            status = agent_status
+    return status, latest_mtime
+
+
+def kimi_sessions(limit, now=None):
+    # ponytail: web and CLI sessions both land under KIMI_CODE_HOME; state.json
+    # updatedAt is epoch milliseconds while Codex updatedAt is seconds.
+    root = Path(os.environ.get("KIMI_CODE_HOME", Path.home() / ".kimi-code"))
+    now = now if now is not None else time.time()
+    sessions = []
+    skipped_invalid = False
+    try:
+        lines = (root / "session_index.jsonl").read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return None  # Unavailable is different from a successfully read empty index.
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            entry = json.loads(line)
+            if not isinstance(entry, dict):
+                raise ValueError("session index entry must be an object")
+            session_id, session_dir = entry.get("sessionId"), entry.get("sessionDir")
+            if not all(isinstance(value, str) and value.strip() and "\0" not in value
+                       for value in (session_id, session_dir)):
+                raise ValueError("sessionId and sessionDir must be nonempty strings")
+            session_id.encode("utf-8")
+            state = json.loads((Path(session_dir) / "state.json").read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                raise ValueError("session state must be an object")
+            title = state.get("title") or "Kimi session"
+            if not isinstance(title, str):
+                raise ValueError("session title must be a string")
+            title.encode("utf-8")
+        except (OSError, ValueError):  # Includes JSONDecodeError and UnicodeError.
+            skipped_invalid = True
+            continue
+        if state.get("archived"):
+            continue
+        status, mtime = kimi_turn_state(Path(session_dir), now)
+        updated = state.get("updatedAt")
+        try:
+            updated = updated / 1000 if type(updated) in (int, float) else None
+            if updated is not None and not math.isfinite(updated):
+                updated = None
+        except OverflowError:
+            updated = None
+        sessions.append({
+            "id": session_id,
+            "title": title,
+            "status": status,
+            "updatedAt": updated if updated is not None else mtime,
+            "source": "kimi",
+        })
+    sessions.sort(key=lambda session: session["updatedAt"] or 0, reverse=True)
+    return sessions[:limit] if sessions or not skipped_invalid else None
+
+
+def merged_tasks(codex_tasks, kimi_tasks):
+    # ponytail: keep each source's internal order; interleave by recency only.
+    merged, i, j = [], 0, 0
+    while i < len(codex_tasks) and j < len(kimi_tasks):
+        if (codex_tasks[i].get("updatedAt") or 0) >= (kimi_tasks[j].get("updatedAt") or 0):
+            merged.append(dict(codex_tasks[i], source="codex"))
+            i += 1
+        else:
+            merged.append(kimi_tasks[j])
+            j += 1
+    merged.extend(dict(task, source="codex") for task in codex_tasks[i:])
+    merged.extend(kimi_tasks[j:])
+    return merged
+
+
 def normalize_usage(result):
     preferred = (result or {}).get("rateLimits") or {}
     window = preferred.get("primary") or {}
@@ -156,7 +273,8 @@ def format_duration(seconds):
     return f"{days}d {hours}h" if days else f"{hours}h"
 
 
-def snapshot_wire(tasks, usage=None):
+def snapshot_wire(tasks, usage=None, kimi_collected=False):
+    tasks = tasks[:8]  # TASK rows and ACTIVITY cards describe the same displayed set.
     def clipped_hex(value, limit):
         data = value.encode("utf-8")[:limit]
         while data:
@@ -168,24 +286,38 @@ def snapshot_wire(tasks, usage=None):
 
     states = {"idle": 1, "active": 2, "waiting": 3, "completed": 4, "systemError": 5}
     lines = ["BEGIN"]
-    for task in tasks[:8]:
+    for task in tasks:
+        source = task.get("source", "codex")
         # ponytail: use a readable ASCII alias until a real CJK font is added to firmware.
         ascii_title = " ".join("".join(c if c.isascii() and c.isprintable() else " "
                                        for c in task["title"]).split())
-        display_title = f"{ascii_title or 'Codex task'} / {task['id'][:8]}"
+        short_id = task["id"].removeprefix("session_")[:8]
+        fallback = "Kimi session" if source == "kimi" else "Codex task"
+        display_title = f"{ascii_title or fallback} / {short_id}"
         lines.append(f"TASK\t{clipped_hex(task['id'], 63)}\t{clipped_hex(display_title, 95)}\t"
-                     f"{states.get(task['status'], 1)}\t0")
+                     f"{states.get(task['status'], 1)}\t0\t{source}")
     usage = usage or {}
-    running = sum(task["status"] in {"active", "waiting"} for task in tasks)
-    cards = [
-        ("ACTIVITY", f"{running} RUNNING" if running else "ALL QUIET", "Local Codex rollout monitor"),
+
+    def activity_card(source, detail):
+        running = sum(t["status"] in {"active", "waiting"}
+                      for t in tasks if t.get("source", "codex") == source)
+        return ("ACTIVITY", f"{running} RUNNING" if running else "ALL QUIET", detail, source)
+
+    # ponytail: the firmware holds only 4 cards total; a Kimi card replaces LINK,
+    # which merely restates the USB UART transport.
+    cards = [activity_card("codex", "Local Codex rollout monitor")]
+    if kimi_collected:
+        cards.append(activity_card("kimi", "Local Kimi Code session monitor"))
+    cards += [
         ("CODEX LEFT", f"{usage['left']}%" if usage.get("left") is not None else "UNKNOWN",
-         f"{usage.get('plan') or 'Codex'} / {usage.get('windowMins') or '?'} min window"),
-        ("RESET IN", format_duration(usage.get("resetsIn")), "Official App Server rate limit"),
-        ("LINK", "USB UART", "Task activity + quota snapshot"),
+         f"{usage.get('plan') or 'Codex'} / {usage.get('windowMins') or '?'} min window", "codex"),
+        ("RESET IN", format_duration(usage.get("resetsIn")), "Official App Server rate limit", "codex"),
     ]
-    for title, value, detail in cards:
-        lines.append(f"CARD\t{clipped_hex(title, 31)}\t{clipped_hex(value, 47)}\t{clipped_hex(detail, 95)}")
+    if not kimi_collected:
+        cards.append(("LINK", "USB UART", "Task activity + quota snapshot", "codex"))
+    for title, value, detail, source in cards[:4]:
+        lines.append(f"CARD\t{clipped_hex(title, 31)}\t{clipped_hex(value, 47)}\t"
+                     f"{clipped_hex(detail, 95)}\t{source}")
     lines.append("END")
     wire = ("\n".join(lines) + "\n").encode("ascii")
     if len(wire) >= 4096:
@@ -193,7 +325,13 @@ def snapshot_wire(tasks, usage=None):
     return wire
 
 
-def send_serial(port, codex, limit, watch, interval):
+def collect(codex, limit, with_kimi=True):
+    tasks, usage = probe(codex, limit)
+    kimi = kimi_sessions(limit) if with_kimi else None
+    return merged_tasks(tasks, kimi or [])[:limit], usage, kimi is not None
+
+
+def send_serial(port, codex, limit, watch, interval, with_kimi=True):
     import serial  # Already installed with ESP-IDF/esptool; no extra dependency.
     if port.lower() == "auto":
         port = find_panel_port()
@@ -204,10 +342,14 @@ def send_serial(port, codex, limit, watch, interval):
     connection.open()
     try:
         while True:
-            tasks, usage = probe(codex, limit)
-            connection.write(snapshot_wire(tasks, usage))
+            tasks, usage, kimi_collected = collect(codex, limit, with_kimi)
+            connection.write(snapshot_wire(tasks, usage, kimi_collected))
             connection.flush()
-            print(f"sent {len(tasks)} real Codex task(s) to {port}", flush=True)
+            counts = {}
+            for task in tasks[:8]:
+                counts[task.get("source", "codex")] = counts.get(task.get("source", "codex"), 0) + 1
+            summary = " + ".join(f"{count} {source}" for source, count in sorted(counts.items()))
+            print(f"sent {summary or '0'} task(s) to {port}", flush=True)
             time.sleep(0.3)
             for line in connection.read_all().decode("utf-8", errors="replace").splitlines():
                 if "REAL snapshot" in line:
@@ -220,7 +362,9 @@ def send_serial(port, codex, limit, watch, interval):
 
 
 def self_test():
+    import tempfile
     from types import SimpleNamespace
+    from unittest.mock import patch
     board = SimpleNamespace(device="COM7", vid=0x1A86, pid=0x55D3, description="CH343")
     other = SimpleNamespace(device="COM3", vid=None, pid=None, description="Other serial port")
     assert find_panel_port([other, board]) == "COM7"
@@ -241,13 +385,151 @@ def self_test():
     unloaded = normalize({"id": "t2", "preview": "First line\nSecond", "status": {"type": "notLoaded"}})
     assert unloaded["title"] == "First line" and unloaded["status"] == "idle"
     wire = snapshot_wire([active], {"left": 78, "resetsIn": 3600}).decode("ascii")
-    assert wire.startswith("BEGIN\nTASK\t") and "\t2\t0\nCARD\t" in wire and wire.endswith("END\n")
+    assert wire.startswith("BEGIN\nTASK\t") and "\t2\t0\tcodex\n" in wire and wire.endswith("END\n")
+    assert "LINK".encode().hex() in wire  # Legacy 4-card layout when Kimi is absent.
+
+    now = time.time()
+    with tempfile.TemporaryDirectory() as tmp:
+        session_dir = Path(tmp)
+        wire_dir = session_dir / "agents" / "main"
+        wire_dir.mkdir(parents=True)
+        wire_file = wire_dir / "wire.jsonl"
+        wire_file.write_text('{"type":"turn.prompt","promptId":"p1"}\n', encoding="utf-8")
+        os.utime(wire_file, (now, now))
+        assert kimi_turn_state(session_dir, now)[0] == "active"
+        with wire_file.open("a", encoding="utf-8") as stream:
+            stream.write('{"type":"interaction.request","id":"a1"}\n')
+        os.utime(wire_file, (now, now))
+        assert kimi_turn_state(session_dir, now)[0] == "waiting"
+        with wire_file.open("a", encoding="utf-8") as stream:
+            stream.write('{"type":"interaction.resolved","id":"a1"}\n'
+                         '{"type":"prompt.completed","promptId":"p1"}\n')
+        os.utime(wire_file, (now, now))
+        assert kimi_turn_state(session_dir, now)[0] == "completed"
+        assert kimi_turn_state(session_dir, now + 3 * 60)[0] == "idle"
+
+        child = session_dir / "agents" / "agent-0" / "wire.jsonl"
+        child.parent.mkdir()
+        # Same prompt id in another agent must not be resolved by the main agent.
+        child.write_text('{"type":"turn.prompt","promptId":"p1"}\n', encoding="utf-8")
+        os.utime(child, (now, now))
+        assert kimi_turn_state(session_dir, now)[0] == "active"
+        with child.open("a", encoding="utf-8") as stream:
+            stream.write('{"type":"interaction.request","id":"a1"}\n')
+        os.utime(child, (now, now))
+        assert kimi_turn_state(session_dir, now)[0] == "waiting"
+        # An old waiting agent is not revived by another agent's fresh writes.
+        os.utime(child, (now - 901, now - 901))
+        assert kimi_turn_state(session_dir, now)[0] == "completed"
+        with child.open("a", encoding="utf-8") as stream:
+            stream.write('{"type":"interaction.resolved","id":"a1"}\n'
+                         '{"type":"prompt.aborted","promptId":"p1"}\n')
+        os.utime(child, (now, now))
+        assert kimi_turn_state(session_dir, now)[0] == "completed"
+        assert kimi_turn_state(session_dir, now + 901)[0] == "idle"
+        real_stat, real_open = Path.stat, Path.open
+        def disappearing_stat(path, *args, **kwargs):
+            if path == child:
+                raise FileNotFoundError("removed after enumeration")
+            return real_stat(path, *args, **kwargs)
+        def unreadable_open(path, *args, **kwargs):
+            if path == child:
+                raise PermissionError("agent log temporarily unavailable")
+            return real_open(path, *args, **kwargs)
+        with patch.object(Path, "stat", disappearing_stat):
+            assert kimi_turn_state(session_dir, now)[0] == "completed"
+        with patch.object(Path, "open", unreadable_open):
+            assert kimi_turn_state(session_dir, now)[0] == "completed"
+        with patch.object(Path, "glob", side_effect=OSError("directory unavailable")):
+            assert kimi_turn_state(session_dir, now) == ("idle", None)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        session_dir = root / "sessions" / "wd_x" / "session_abc123"
+        (session_dir / "agents" / "main").mkdir(parents=True)
+        (session_dir / "state.json").write_text(json.dumps(
+            {"title": "Kimi task", "updatedAt": 1788445147207, "archived": False}), encoding="utf-8")
+        (root / "session_index.jsonl").write_text(json.dumps(
+            {"sessionId": "session_abc123", "sessionDir": str(session_dir)}) + "\n", encoding="utf-8")
+        with patch.dict(os.environ, {"KIMI_CODE_HOME": str(root)}):
+            found = kimi_sessions(8)
+        assert found[0]["title"] == "Kimi task" and found[0]["updatedAt"] == 1788445147.207
+        with patch.dict(os.environ, {"KIMI_CODE_HOME": str(root / "missing")}):
+            assert kimi_sessions(8) is None
+
+        index_file = root / "session_index.jsonl"
+        state_file = session_dir / "state.json"
+        good_entry = {"sessionId": "session_abc123", "sessionDir": str(session_dir)}
+        good_state = {"title": "Kimi task", "updatedAt": 1788445147207}
+        with patch.dict(os.environ, {"KIMI_CODE_HOME": str(root)}):
+            for bad_state in (None, [], 1, "bad", {"title": ["bad"]}):
+                state_file.write_text(json.dumps(bad_state), encoding="utf-8")
+                assert kimi_sessions(8) is None
+            state_file.write_bytes(b"\xff")
+            assert kimi_sessions(8) is None
+            state_file.write_text(json.dumps(good_state), encoding="utf-8")
+            bad_entries = [None, [], 1, {}, {"sessionId": 1, "sessionDir": str(session_dir)},
+                           {"sessionId": "s", "sessionDir": []},
+                           {"sessionId": "", "sessionDir": str(session_dir)}]
+            index_file.write_text("\n".join(json.dumps(e) for e in bad_entries) +
+                                  '\n{"incomplete":\n' + json.dumps(good_entry), encoding="utf-8")
+            assert len(kimi_sessions(8)) == 1  # Bad rows never hide a healthy sibling.
+            index_file.write_bytes(b"\xff")
+            assert kimi_sessions(8) is None
+            index_file.write_text("", encoding="utf-8")
+            assert kimi_sessions(8) == []
+            index_file.write_text(json.dumps(good_entry), encoding="utf-8")
+            state_file.write_text(json.dumps(dict(good_state, archived=True)), encoding="utf-8")
+            assert kimi_sessions(8) == []
+            for timestamp in ([], True, float("nan"), float("inf"), 10 ** 400):
+                state_file.write_text(json.dumps(dict(good_state, updatedAt=timestamp)), encoding="utf-8")
+                assert kimi_sessions(8)[0]["updatedAt"] is None
+            real_read_text = Path.read_text
+            def unreadable_index(path, *args, **kwargs):
+                if path == index_file:
+                    raise PermissionError("index unavailable")
+                return real_read_text(path, *args, **kwargs)
+            with patch.object(Path, "read_text", unreadable_index), \
+                    patch(__name__ + ".probe", return_value=([active], {})):
+                kept, usage, available = collect("unused", 8)
+                assert len(kept) == 1 and kept[0]["source"] == "codex" and not available
+                fallback = snapshot_wire(kept, usage, available).decode()
+                assert "\tkimi\n" not in fallback and "LINK".encode().hex() in fallback
+
+    older = {"id": "c1", "title": "Old", "status": "idle", "updatedAt": 100}
+    newer = {"id": "c2", "title": "New", "status": "idle", "updatedAt": 300}
+    kimi = [{"id": "session_k1", "title": "K", "status": "active", "updatedAt": 200, "source": "kimi"}]
+    merged = merged_tasks([newer, older], kimi)
+    assert [task["id"] for task in merged] == ["c2", "session_k1", "c1"]
+    kimi_wire = snapshot_wire(merged, {"left": 78}, kimi_collected=True).decode("ascii")
+    assert "\t0\tkimi\n" in kimi_wire and "LINK".encode().hex() not in kimi_wire
+    assert kimi_wire.count("CARD\t") == 4
+
+    with patch(__name__ + ".probe", return_value=([newer, older], {})), \
+            patch(__name__ + ".kimi_sessions", return_value=kimi) as read_kimi:
+        limited, _, available = collect("unused", 1)
+        assert available and [t["id"] for t in limited] == ["c2"]
+        assert snapshot_wire(limited, kimi_collected=True).count(b"TASK\t") == 1
+        codex_only, _, available = collect("unused", 2, with_kimi=False)
+        assert not available and len(codex_only) == 2 and read_kimi.call_count == 1
+        assert all(t["source"] == "codex" for t in codex_only)
+
+    many_codex = [dict(newer, id=f"c{i}", status="active") for i in range(8)]
+    many_kimi = [dict(kimi[0], id=f"k{i}") for i in range(8)]
+    capped = snapshot_wire(merged_tasks(many_codex, many_kimi), kimi_collected=True).decode()
+    rows = [line.split("\t") for line in capped.splitlines()]
+    assert sum(row[0] == "TASK" for row in rows) == 8
+    assert not any(row[0] == "TASK" and row[-1] == "kimi" for row in rows)
+    activity = {row[-1]: bytes.fromhex(row[2]).decode() for row in rows
+                if row[0] == "CARD" and bytes.fromhex(row[1]).decode() == "ACTIVITY"}
+    assert activity == {"codex": "8 RUNNING", "kimi": "ALL QUIET"}
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
     parser.add_argument("--codex", help="path to codex executable")
+    parser.add_argument("--no-kimi", action="store_true", help="skip Kimi Code session collection")
     parser.add_argument("--limit", type=int, default=8)
     parser.add_argument("--port", help="send snapshot to COMx or auto-detect with 'auto'")
     parser.add_argument("--watch", action="store_true", help="refresh continuously; auto-detect port if omitted")
@@ -259,7 +541,8 @@ if __name__ == "__main__":
         print("self-test OK")
     elif args.port or args.watch:
         send_serial(args.port or "auto", find_codex(args.codex), max(1, min(args.limit, 8)),
-                    args.watch, max(2.0, args.interval))
+                    args.watch, max(2.0, args.interval), with_kimi=not args.no_kimi)
     else:
-        print(json.dumps(probe(find_codex(args.codex), max(1, min(args.limit, 100))),
-                         ensure_ascii=False, indent=2))
+        tasks, usage, _ = collect(find_codex(args.codex), max(1, min(args.limit, 100)),
+                                  with_kimi=not args.no_kimi)
+        print(json.dumps((tasks, usage), ensure_ascii=False, indent=2))

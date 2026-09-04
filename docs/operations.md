@@ -15,7 +15,7 @@
 | 数据接口 | 板载 USB 转串口，选择 UART1；115200 8N1 |
 | 自动枚举 | CH343，VID:PID `1A86:55D3` |
 
-设备固件已烧录时，日常显示只需 Python、pyserial、本机可运行且已登录的 Codex，不需要打开 VS Code 或重新编译。
+设备固件已烧录时，日常显示只需 Python、pyserial、本机可运行且已登录的 Codex，不需要打开 VS Code 或重新编译。Kimi Code 为可选数据源：无需额外配置，桥接自动读取本机 `~/.kimi-code` 的会话文件（Web 与 CLI 会话都会落盘）；不需要时可用 `--no-kimi` 跳过。
 
 换电脑时不要直接复制上述绝对路径。先找实际 Python 和 Codex，再用 `--codex` 指定。pyserial 在本机 ESP-IDF 环境中已安装；其他 Python 可检查 `python -m pip show pyserial`，缺少时才安装 `python -m pip install pyserial`。
 
@@ -49,8 +49,9 @@ python tools/codex_status_probe.py --codex 'C:\实际安装目录\codex.exe' --w
 - `--watch`：持续同步，省略 `--port` 时自动枚举。
 - `--port auto`：自动选择；不带 `--watch` 时只推送一次。
 - `--port COMx`：显式指定，跳过自动枚举，不保证该设备就是本屏幕。
-- `--limit`：默认 8；串口模式限制 1–8，仅 JSON 模式限制 1–100。
+- `--limit`：默认 8；串口模式限制 1–8，仅 JSON 模式限制 1–100；限制两来源合并后的总数，不是每来源各一份。
 - `--interval`：默认 10 秒，最小 2 秒，为每轮采集与发送之后的等待时间。
+- `--no-kimi`：跳过 Kimi Code 采集，仅同步 Codex 数据。
 - 无 `--watch` 且无 `--port`：只打印 JSON `[tasks, usage]`，不打开串口；标题可能含私人信息。
 
 ## 3. 串口与状态排障
@@ -77,6 +78,7 @@ python tools/codex_status_probe.py --codex 'C:\实际安装目录\codex.exe' --w
 | `0h` | 不到一小时会被向下取整为 0h，也可能已到期；不能只据这个值判断已重置 |
 | 会话只剩英文片段 | 固件尚无完整中文字库，目前是 ASCII 标题加短 ID |
 | 明明结束却显示 IDLE | 完成提示通常仅约两分钟；日志来源与文件修改时间也影响判断 |
+| Kimi 显示 NOT CONNECTED | 未找到索引、使用了 `--no-kimi`，或索引读取/UTF-8 解码失败、坏元数据导致无可显示会话；检查 `KIMI_CODE_HOME`、文件权限和 JSON 格式。成功读取空索引不等于读取失败 |
 
 不要对未知串口自动发送测试字符串或烧录命令。看到 `panel confirmed` 只说明固件接收快照，不能证明当前状态推导或触控已验收。
 

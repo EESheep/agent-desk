@@ -1,12 +1,13 @@
 # 架构与数据协议
 
-核对日期：2026-09-03。本文描述当前源码：多软件显示与筛选已实现，真实数据仍只有 Codex；早期模拟审批、Wi-Fi 和其他软件适配器不代表已实现能力。使用入口见 [README](../README.md)。
+核对日期：2026-09-03。本文描述当前源码：多软件显示与筛选已实现，真实数据已有 Codex 与 Kimi Code（Kimi 为本机文件推导，无额度接口）；早期模拟审批、Wi-Fi 和 DeepSeek Harness 适配器不代表已实现能力。使用入口见 [README](../README.md)。
 
 ## 数据流
 
 ```text
 电脑：独立 Codex App Server ── 会话列表 / 额度 / 套餐 ─┐
 电脑：.codex/sessions 下的 JSONL ── 活动推导 ──────────┤
+电脑：.kimi-code 会话索引与 wire.jsonl ── 活动推导 ───┤
                                                     ↓
                                tools/codex_status_probe.py
                                                     ↓ USB 转串口 / 115200 8N1
@@ -26,6 +27,8 @@
 `thread/list` 按 `updated_at` 降序，传入 `sourceKinds=[]`，不按项目筛选。只读一次返回页，不跟随分页游标，因此不是全部历史会话。
 
 串口模式默认 8 个，`--limit` 限制为 1–8；仅 JSON 输出模式可请求 1–100 个。需关注项排在前面，组内保留上游顺序。活动统计仅针对本次列表；屏幕能滚动不代表加载了更多任务。
+
+两来源归并：Codex 任务保持上游返回顺序，Kimi 任务按 `updatedAt` 降序，两路按更新时间交错合并后统一截取 `--limit` 条；8 条串口上限为两来源共用，不是每个来源各 8 条。发送 TASK 和统计 ACTIVITY 使用同一份最终截断列表，不统计未发送的会话。
 
 ## 状态判定
 
@@ -47,11 +50,28 @@
 
 FAILED 仅对应接口 `systemError`，不从工具失败日志推导；等待输入的可见性取决于上游是否给出标志。`waitingOnApproval` 不参与显示或操作审批。
 
+### Kimi Code 推导
+
+Kimi Code 会话从 `KIMI_CODE_HOME`（默认 `~/.kimi-code`）读取：`session_index.jsonl` 提供会话索引，各会话 `state.json` 的 `updatedAt` 用于排序（单位为毫秒，Codex 日志时间为秒）；Web 端与 CLI 会话都会在此落盘，`archived: true` 的会话跳过。活动推导解析 `agents/*/wire.jsonl`，覆盖主代理与子代理；每个文件独立配对事件、按自身修改时间判断新鲜度：
+
+| 条件 | 推导结果 |
+| --- | --- |
+| 存在未配对 `interaction.request`（无对应 `interaction.resolved`），文件距今不超过 15 分钟更新 | WAITING INPUT |
+| 存在未配对 `turn.prompt`（按 promptId 配对，无对应 `prompt.completed` / `prompt.aborted`），文件距今不超过 15 分钟更新 | RUNNING |
+| 最近回合已结束，文件距今不超过 2 分钟更新 | COMPLETED |
+| 其余或文件缺失 | IDLE |
+
+会话汇总优先级为 WAITING INPUT > RUNNING > COMPLETED > IDLE；主代理已完成但子代理仍等待或运行时，不显示完成。不同代理的同名 promptId / interaction id 不交叉配对；旧子代理也不会被其他代理的新日志重新激活。单个日志在扫描中消失或不可读取时跳过，不终止整条桥接。
+
+元数据容错：索引不存在、不可读或无法按 UTF-8 解码时，采集返回不可用，不生成 Kimi ACTIVITY 卡，也不影响 Codex 采集。索引条目与 state.json 必须是对象；会话 ID、目录与标题经过类型校验，坏记录跳过，其他有效会话继续显示。若没有可显示会话且跳过了坏记录，也返回不可用；成功读取的空索引或仅含有效归档会话则返回空列表，仍表示采集成功。非法更新时间回退到日志修改时间。现有固件把来源不可用显示为 NOT CONNECTED，不能区分未安装与读取失败；这里没有新增错误页面。
+
+仍是日志启发式：某代理超过 15 分钟不写日志，即使仍在运行也可能被判为 IDLE；完成窗口使用文件修改时间而非严格完成事件时间，中止也作为回合结束。跳过不可读日志可能少报状态，不等于确认代理空闲。Kimi 没有本地额度/套餐接口，因此没有 CODEX LEFT 类卡片。
+
 ## 计数与视觉口径
 
 - Attention 包含 WAITING INPUT、COMPLETED、FAILED。
 - All / Codex / Kimi / DSH 筛选同时作用于会话、顶部计数和 Information；顶部 `running` 只计 RUNNING，`completed` 单独计数，底部 Attention 显示当前来源的关注数量。
-- Information 的 ACTIVITY 把 `active` 和 `waiting` 都算作 RUNNING，有等待输入时可能与顶部计数不同；这是当前已知口径差异。
+- Information 的 ACTIVITY 卡按来源各一张（Codex / Kimi 分别统计本来源）；它把 `active` 和 `waiting` 都算作 RUNNING，有等待输入时可能与顶部计数不同，这是当前已知口径差异。
 - 完成项绿色，等待项黄色，失败项红色，运行项青色；完成标记还有勾选符号，不只靠颜色。
 - 全局提醒条不受来源或页面影响，优先选取快照中第一个 COMPLETED（沿用上游更新排序），无完成时选首个需关注项；无数据或过期警告优先于旧任务提醒。不存储“已读”状态，不自动跳页，也不伪造完成时间。两分钟规则仍来自主机。
 - Information 的 All 概览逐一显示 Codex / Kimi / DeepSeek Harness；只有快照中出现该来源任务或卡片时才标为 DATA RECEIVED，否则 NOT CONNECTED。选中来源后显示其卡片。该标记表示收到过当前快照数据，不是独立软件进程探活；新鲜度仍以顶部全局状态为准。
@@ -89,7 +109,7 @@ END
 
 TASK、CARD 可重复。BEGIN 清空待提交快照，END 发布；无效记录或超长行丢弃本次接收，保留旧快照，下一次 BEGIN 重新同步。没有协议版本、校验和、请求 ID 或可靠重传。
 
-方括号表示可省略字段，不是字面字符。source 为未编码的 ASCII `codex`、`kimi` 或 `dsh`；未知来源拒绝接收。省略时默认 Codex，兼容当前 Python 桥接（仍发送旧格式）。来源存在任务/卡片便可参与筛选，但这不等于已经有 Kimi/DSH 数据采集器。
+方括号表示可省略字段，不是字面字符。source 为未编码的 ASCII `codex`、`kimi` 或 `dsh`；未知来源拒绝接收。省略时默认 Codex，但当前 Python 桥接已始终显式发送来源字段。来源存在任务/卡片便可参与筛选；Kimi 采集器已接入，DSH 采集器仍未实现。
 
 状态编码：`1=IDLE`、`2=RUNNING`、`3=WAITING INPUT`、`4=COMPLETED`、`5=FAILED`，其他值显示 UNKNOWN。
 
@@ -117,6 +137,6 @@ TASK、CARD 可重复。BEGIN 清空待提交快照，END 发布；无效记录�
 
 ## 多软件扩展边界
 
-延续电脑采集、统一快照、ESP32 显示。Kimi Code CLI / DeepSeek Harness 接入前先核对实际版本和可用事件/日志。
+延续电脑采集、统一快照、ESP32 显示。Kimi Code 采集器已接入（本机 `~/.kimi-code` 文件推导）；DeepSeek Harness 适配器仍未实现，接入前先核对实际版本和可用事件/日志。Kimi 的 `wire.jsonl` 事件格式为实测核对所得，不是官方承诺，Kimi Code 版本变化后需重新核对。
 
-已增加来源字段和来源内 ID 区分、统一列表筛选、全局提醒条及按来源展示的信息页；颜色统一表示状态，来源用文字区分。全局容量仍是 8 个任务 / 4 张卡片，不是每个软件各有一份。尚未实现 Kimi/DSH 适配器、各来源独立心跳、通知已读或中文字体；无接口的数据不能伪造。
+已增加来源字段和来源内 ID 区分、统一列表筛选、全局提醒条及按来源展示的信息页；颜色统一表示状态，来源用文字区分。全局容量仍是 8 个任务 / 4 张卡片，不是每个软件各有一份。尚未实现 DSH 适配器、各来源独立心跳、通知已读或中文字体；无接口的数据不能伪造。
