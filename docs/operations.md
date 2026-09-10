@@ -56,6 +56,8 @@ python tools/codex_status_probe.py --codex 'C:\实际安装目录\codex.exe' --w
 
 ## 3. 串口与状态排障
 
+2026-09-10 状态采集更新：Codex 优先读取本地 SQLite 最新回合，兼容旧 JSONL。更新 Python 脚本后重启当前桥接或 AMOLED HTTP 服务即可，无需烧录。若持续空闲，先检查是否仍运行旧进程、数据库是否可读；不要仅延长日志超时。新增自检：`python tests/test_codex_activity.py`。AMOLED 网络服务及配置见[实现说明](ESP32-S3-Touch-AMOLED-2.41-V2/implementation.md)。
+
 先枚举串口，不向设备写入：
 
 ```powershell

@@ -1,12 +1,12 @@
 # 架构与数据协议
 
-核对日期：2026-09-03。本文描述当前源码：多软件显示与筛选已实现，真实数据已有 Codex 与 Kimi Code（Kimi 为本机文件推导，无额度接口）；早期模拟审批、Wi-Fi 和 DeepSeek Harness 适配器不代表已实现能力。使用入口见 [README](../README.md)。
+核对日期：2026-09-10。以下固件和串口协议针对 LCD-7；AMOLED V2 的 Wi-Fi 通路见[独立实现说明](ESP32-S3-Touch-AMOLED-2.41-V2/implementation.md)。本文描述当前源码：多软件显示与筛选已实现，真实数据已有 Codex 与 Kimi Code（Kimi 为本机文件推导，无额度接口）；早期模拟审批、Wi-Fi 和 DeepSeek Harness 适配器不代表已实现能力。使用入口见 [README](../README.md)。
 
 ## 数据流
 
 ```text
 电脑：独立 Codex App Server ── 会话列表 / 额度 / 套餐 ─┐
-电脑：.codex/sessions 下的 JSONL ── 活动推导 ──────────┤
+电脑：Codex 回合 SQLite / 旧 JSONL ── 活动状态 ───────┤
 电脑：.kimi-code 会话索引与 wire.jsonl ── 活动推导 ───┤
                                                     ↓
                                tools/codex_status_probe.py
@@ -35,8 +35,9 @@
 独立 App Server 中的 `notLoaded` 不代表桌面任务未运行。判定顺序为：
 
 1. 接口返回 `active`、`idle`、`systemError` 时直接采用，不用日志覆盖。
-2. 其他状态使用本地日志推导结果，默认 `idle`。
-3. `activeFlags` 存在 `waitingOnUserInput` 时覆盖为 `waiting`。
+2. 其他状态优先只读查询 `CODEX_HOME/thread_history_1.sqlite`（默认用户目录 `.codex`），按 `rollout_ordinal` 取最新回合。`inProgress` 为 active；completed/interrupted/failed 在完成后的两分钟内分别映射 completed/completed/systemError，之后为 idle。未知状态为 unknown。
+3. 数据库缺失、查询失败或没有对应回合时回退旧 JSONL；无有效证据时为 unknown。AMOLED 显示“未知”，LCD-7 旧串口协议兼容映射为 IDLE。
+4. `activeFlags` 存在 `waitingOnUserInput` 时覆盖为 `waiting`。
 
 日志根目录为 `CODEX_HOME/sessions`，未设置环境变量时用用户目录 `.codex/sessions`。递归扫描 JSONL，以文件名末尾会话 ID 匹配：
 
@@ -44,11 +45,14 @@
 | --- | --- |
 | 最近 `task_started` 的 turn ID 没有终止事件，文件距今不超过 15 分钟更新 | RUNNING |
 | 最近 turn ID 有 `task_complete` 或 `turn_aborted`，文件距今不超过 2 分钟更新 | COMPLETED |
-| 其余、文件缺失或无法读取 | IDLE |
+| 已有终止事件且超过 2 分钟 | IDLE |
+| 未结束但已过期、文件缺失或无法读取 | UNKNOWN |
 
-时间依据是**日志文件修改时间**而非事件时间。后续写入可能延长完成提示；长时间没写日志的活动任务可能变为 IDLE；中止回合也显示 COMPLETED。该提示不证明任务成功，不保证桌面实时状态正确。
+旧日志回退的时间依据是**日志文件修改时间**而非事件时间。后续写入可能延长完成提示；长时间没写日志的活动任务会变为 UNKNOWN（旧串口映射 IDLE）；中止回合也显示 COMPLETED。该提示不证明任务成功，不保证桌面实时状态正确。
 
-FAILED 仅对应接口 `systemError`，不从工具失败日志推导；等待输入的可见性取决于上游是否给出标志。`waitingOnApproval` 不参与显示或操作审批。
+SQLite 属于 Codex 内部格式，升级可能改变结构；程序异常退出后 inProgress 也可能残留，不能当作进程存活证明。
+
+FAILED 对应接口 `systemError` 或数据库近期 failed 回合，不从工具失败日志推导；等待输入的可见性取决于上游是否给出标志。`waitingOnApproval` 不参与显示或操作审批。
 
 ### Kimi Code 推导
 

@@ -107,3 +107,9 @@
 - 当时独立服务返回 notLoaded，曾显示 UNKNOWN / APPROVAL UNKNOWN。后续引入日志推导与额度卡片，并移除审批显示；旧说明不再适用。
 
 历史构建有 SDK Kconfig、组件依赖和 Unicode 输出警告，未阻止构建；未修改 SDK 源码或全局屏蔽警告。构建助手用进程级 PYTHONUTF8 和 CSV 大小报告处理输出编码。实际 Flash 16 MB 与当前镜像 8 MB 配置不同，属于保守容量选择，不表示可直接启用 OTA。
+
+## 2026-09-10 共用状态采集修复
+
+- Codex SQLite 最新回合优先，缺失/结构不兼容回退旧日志；新增 `tests/test_codex_activity.py`，同时通过原采集自检和 AMOLED HTTP 测试。
+- AMOLED 实机接口返回 active，设备渲染截图确认“运行中”。LCD-7 共用脚本与串口格式测试通过，但本次没有重新执行 7 寸实机验证。
+- 旧章节的“只读日志”结论保留为历史记录，当前状态判定以[架构说明](architecture.md)为准。

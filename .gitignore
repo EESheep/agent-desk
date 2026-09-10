@@ -31,3 +31,9 @@ auth.json
 .DS_Store
 Thumbs.db
 Desktop.ini
+/upstream-amoled-v2/
+/local/
+firmware-amoled-2.41-v2/build/
+firmware-amoled-2.41-v2/managed_components/
+firmware-amoled-2.41-v2/sdkconfig
+firmware-amoled-2.41-v2/sdkconfig.old

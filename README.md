@@ -1,5 +1,7 @@
 # Agent Desk：AI 编程助手桌面状态屏
 
+设备维护：现有 `firmware/` 专用于 **ESP32-S3-Touch-LCD-7**。新增 **ESP32-S3-Touch-AMOLED-2.41 V2**（用户于 2026-09-10 确认），使用独立的 `firmware-amoled-2.41-v2/`，已构建、烧录并接入局域网快照。新设备的操作和验证见 [AMOLED V2 实现说明](docs/ESP32-S3-Touch-AMOLED-2.41-V2/implementation.md)。代码按[多设备维护约定](docs/devices.md)分隔，共用电脑端采集逻辑。下文当前功能、命令与验证结论均针对 LCD-7。
+
 把电脑上的 Codex 与 Kimi Code 会话活动、以及 Codex 账户额度显示到 **Waveshare ESP32-S3-Touch-LCD-7（800×480）**。电脑读取数据，ESP32 负责 LVGL 界面与触控；这是只读提醒屏，不执行审批，也不在设备上运行 Codex 或 Kimi Code。
 
 核对日期：2026-09-03。实际开发目录：`C:\Users\ZHUOZhuang\Documents\lvgl-dev`。
@@ -8,7 +10,7 @@
 
 - 合并显示 Codex 与 Kimi Code 的本地会话，两来源按更新时间交错排序、共用最多 8 条上限，支持列表滚动、点击详情和返回。
 - Kimi Code 会话由本机 `~/.kimi-code` 的会话索引与日志文件推导，包含 Web 端与 CLI 会话；Kimi 无本地额度接口，不提供额度卡片。
-- 根据本地日志提示运行中、最近结束和空闲；完成项使用绿色卡片和 `✓ COMPLETED` 标记。
+- Codex 优先读取本地回合数据库并兼容旧日志，提示运行中、最近结束和空闲；完成项使用绿色卡片和 `✓ COMPLETED` 标记。
 - 显示 Codex 剩余额度、额度周期、重置倒计时和连接信息。
 - 通过 UART1 USB 同步；启动时自动查找 CH343 串口，不依赖固定 COM 号。
 - 超过约 15 秒未收到快照时显示 `STALE DATA`，保留旧数据供参考。
@@ -50,8 +52,8 @@ panel confirmed: I (...) desk_panel: REAL snapshot tasks=2 cards=4
 
 顶部 `sessions`、`running`、`completed` 按当前软件筛选计数；底部 Attention 数量包含完成、等待输入和失败。全局提醒条不受当前筛选影响，不会自动跳页；通知随原会话退出 COMPLETED 状态而消失，没有独立已读存储。
 
-- `RUNNING`：日志推导的活动提醒，不是桌面 App 的权威实时状态。
-- `COMPLETED`：最近回合结束提示，通常约两分钟后回到 `IDLE`。实现使用日志文件修改时间，且中止也归入结束提示，**不能据此认定任务成功**。
+- `RUNNING`：Codex 优先取本地数据库的最新回合状态，Kimi 使用日志推导；均不等于进程存活检测。
+- `COMPLETED`：最近回合结束提示，通常约两分钟后回到 `IDLE`。Codex 数据库使用回合完成时间，旧日志与 Kimi 使用文件修改时间，且中止也归入结束提示，**不能据此认定任务成功**。
 - `IDLE`：未检测到活动回合，不代表整个项目已完成。
 - `SYNCED`：刚收到串口快照，不代表上游状态一定完整；`STALE DATA` 表示快照已过期。
 

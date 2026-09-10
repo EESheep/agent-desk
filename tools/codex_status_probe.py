@@ -6,10 +6,12 @@ import math
 import os
 import queue
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 
 
@@ -41,7 +43,7 @@ def find_panel_port(ports=None):
                      f"Available ports: {inventory}")
 
 
-def normalize(thread, rollout_state="idle"):
+def normalize(thread, rollout_state="unknown"):
     status = thread.get("status") or {"type": "unknown"}
     flags = status.get("activeFlags") or []
     title = thread.get("name") or (thread.get("preview") or "Untitled task").splitlines()[0]
@@ -57,11 +59,30 @@ def normalize(thread, rollout_state="idle"):
 
 def rollout_states(thread_ids, active_window=15 * 60, completed_window=2 * 60):
     wanted = set(thread_ids)
-    states = {thread_id: "idle" for thread_id in wanted}
-    root = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "sessions"
+    states = {thread_id: "unknown" for thread_id in wanted}
+    home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    now = time.time()
+    # New desktop builds persist live turns in SQLite; old JSONL may stop updating.
+    # Read-only and schema-guarded because this is an internal Codex database.
+    try:
+        with closing(sqlite3.connect((home / "thread_history_1.sqlite").resolve().as_uri()+"?mode=ro", uri=True, timeout=1)) as db:
+            for thread_id in tuple(wanted):
+                row = db.execute("SELECT status, completed_at FROM thread_turns WHERE thread_id=? ORDER BY rollout_ordinal DESC LIMIT 1", (thread_id,)).fetchone()
+                if row is None:
+                    continue
+                status, completed_at = row
+                if status == "inProgress":
+                    states[thread_id] = "active"
+                elif status in {"completed", "interrupted", "failed"} and isinstance(completed_at, (int, float)):
+                    states[thread_id] = ("systemError" if status == "failed" else "completed") if 0 <= now-completed_at <= completed_window else "idle"
+                wanted.remove(thread_id)
+    except sqlite3.Error:
+        pass  # Legacy installations and unreadable databases use the log fallback.
+    if not wanted:
+        return states
+    root = home / "sessions"
     if not root.exists():
         return states
-    now = time.time()
     for path in root.rglob("*.jsonl"):
         thread_id = next((item for item in wanted if path.stem.endswith(item)), None)
         if not thread_id:
@@ -88,6 +109,8 @@ def rollout_states(thread_ids, active_window=15 * 60, completed_window=2 * 60):
                 states[thread_id] = "active"
             elif latest_turn and latest_turn in terminal and age <= completed_window:
                 states[thread_id] = "completed"
+            elif latest_turn and latest_turn in terminal:
+                states[thread_id] = "idle"
         except OSError:
             pass
     return states
@@ -218,6 +241,8 @@ def normalize_usage(result):
         "left": max(0, min(100, round(100 - used))) if isinstance(used, (int, float)) else None,
         "windowMins": window.get("windowDurationMins"),
         "resetsIn": max(0, round(resets_at - time.time())) if isinstance(resets_at, (int, float)) else None,
+        # Network clients keep each named limit/window; UART still uses the fields above.
+        "buckets": (result or {}).get("rateLimitsByLimitId") or {"default": preferred},
     }
 
 
@@ -258,7 +283,7 @@ def probe(codex, limit):
         raise SystemExit(f"thread/list failed: {replies_by_id[2]['error']}")
     threads = replies_by_id[2]["result"]["data"]
     activity = rollout_states(thread.get("id", "") for thread in threads)
-    tasks = [normalize(thread, activity.get(thread.get("id", ""), "idle")) for thread in threads]
+    tasks = [normalize(thread, activity.get(thread.get("id", ""), "unknown")) for thread in threads]
     usage = normalize_usage(replies_by_id[3].get("result")) if "error" not in replies_by_id[3] else {}
     account = replies_by_id[4].get("result", {}).get("account") or {}
     usage["plan"] = account.get("planType")
@@ -383,7 +408,7 @@ def self_test():
         "type": "active", "activeFlags": ["waitingOnApproval"]}})
     assert active == {"id": "t1", "title": "Build", "status": "active", "updatedAt": None}
     unloaded = normalize({"id": "t2", "preview": "First line\nSecond", "status": {"type": "notLoaded"}})
-    assert unloaded["title"] == "First line" and unloaded["status"] == "idle"
+    assert unloaded["title"] == "First line" and unloaded["status"] == "unknown"
     wire = snapshot_wire([active], {"left": 78, "resetsIn": 3600}).decode("ascii")
     assert wire.startswith("BEGIN\nTASK\t") and "\t2\t0\tcodex\n" in wire and wire.endswith("END\n")
     assert "LINK".encode().hex() in wire  # Legacy 4-card layout when Kimi is absent.
