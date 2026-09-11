@@ -1,128 +1,94 @@
-# Agent Desk：AI 编程助手桌面状态屏
+# Agent Desk
 
-设备维护：现有 `firmware/` 专用于 **ESP32-S3-Touch-LCD-7**。新增 **ESP32-S3-Touch-AMOLED-2.41 V2**（用户于 2026-09-10 确认），使用独立的 `firmware-amoled-2.41-v2/`，已构建、烧录并接入局域网快照。新设备的操作和验证见 [AMOLED V2 实现说明](docs/ESP32-S3-Touch-AMOLED-2.41-V2/implementation.md)。代码按[多设备维护约定](docs/devices.md)分隔，共用电脑端采集逻辑。下文当前功能、命令与验证结论均针对 LCD-7。
+**放在桌面的 AI 编程助手状态屏。**
 
-把电脑上的 Codex 与 Kimi Code 会话活动、以及 Codex 账户额度显示到 **Waveshare ESP32-S3-Touch-LCD-7（800×480）**。电脑读取数据，ESP32 负责 LVGL 界面与触控；这是只读提醒屏，不执行审批，也不在设备上运行 Codex 或 Kimi Code。
+Agent Desk 将 Codex、Kimi Code 的会话活动和 Codex 账户额度显示在独立的触控屏上。多个会话同时进行时，抬眼就能查看哪些正在运行、哪些最近结束，以及额度何时重置，减少来回切换电脑窗口。
 
-核对日期：2026-09-03。实际开发目录：`C:\Users\ZHUOZhuang\Documents\lvgl-dev`。
+电脑端负责采集数据，ESP32 负责显示和触控。设备是一块只读提醒屏，不在板上运行 AI 编程助手，也不执行审批或控制会话。
 
-## 当前功能
+## 能做什么
 
-- 合并显示 Codex 与 Kimi Code 的本地会话，两来源按更新时间交错排序、共用最多 8 条上限，支持列表滚动、点击详情和返回。
-- Kimi Code 会话由本机 `~/.kimi-code` 的会话索引与日志文件推导，包含 Web 端与 CLI 会话；Kimi 无本地额度接口，不提供额度卡片。
-- Codex 优先读取本地回合数据库并兼容旧日志，提示运行中、最近结束和空闲；完成项使用绿色卡片和 `✓ COMPLETED` 标记。
-- 显示 Codex 剩余额度、额度周期、重置倒计时和连接信息。
-- 通过 UART1 USB 同步；启动时自动查找 CH343 串口，不依赖固定 COM 号。
-- 超过约 15 秒未收到快照时显示 `STALE DATA`，保留旧数据供参考。
-- 顶部 All / Codex / Kimi / DSH 软件筛选，底部 Sessions / Attention / Information 导航；列表、计数、详情与信息卡按来源区分。
-- 全局提醒条跨软件筛选、页面和详情保持可见，优先显示最近完成；没有完成时显示需关注项，数据过期时显示过期警告。
+- **集中查看会话**：合并显示 Codex 与 Kimi Code 的本地会话，查看运行、最近结束和空闲等状态。
+- **触控查看详情**：从会话列表进入详情；两款设备分别采用适合屏幕尺寸的布局。
+- **关注账户额度**：显示 Codex 剩余额度、额度周期和重置时间。
+- **识别数据过期**：电脑停止同步时保留上次数据，并提示数据已过期。
 
-**尚未实现**：开机自启、运行中断线重连、Wi-Fi、OTA、完整中文字体、DeepSeek Harness 的电脑端数据适配器。多软件界面和来源协议已实现；Codex 与 Kimi Code 已有真实数据，DSH 显示 NOT CONNECTED，不填充示例会话。Kimi 数据来自本机会话文件推导，不是官方状态接口。等待输入和失败的显示分支已存在，但不保证能读取桌面 App 中对应的实时状态。
+当前已接入 Codex 和 Kimi Code 会话；额度仅接入 Codex。DeepSeek Harness（DSH）保留了界面入口，数据适配器尚未实现。
 
-## 快速开始：设备已经烧录好
+## 支持的设备
 
-1. 用数据线连接板载 USB 转串口接口，UART1/UART2 选择开关置于 **UART1**，不要接成 ESP32 原生 USB 接口。
-2. 确保本机 Codex 可运行且已登录。关闭串口调试助手、烧录监视器和重复的桥接窗口，同一串口只运行一个桥接。
-3. 打开普通 PowerShell，执行本机已验证的命令：
+| | LCD-7 | AMOLED 2.41 V2 |
+| --- | --- | --- |
+| Waveshare 型号 | ESP32-S3-Touch-LCD-7 | ESP32-S3-Touch-AMOLED-2.41 V2 |
+| 屏幕 | 7 英寸，800×480 | 2.41 英寸，600×450 |
+| 数据连接 | USB 串口（UART1） | Wi-Fi 局域网 |
+| 界面 | 软件筛选、会话列表、关注页、信息卡 | 会话分页、可滚动详情、独立额度页 |
+| 中文显示 | 尚无完整中文字库 | 基本汉字和常用标点 |
+| 固件目录 | [`firmware/`](firmware/) | [`firmware-amoled-2.41-v2/`](firmware-amoled-2.41-v2/) |
+| 上手文档 | [连接、构建与烧录](docs/operations.md) | [配置、构建与烧录](docs/ESP32-S3-Touch-AMOLED-2.41-V2/implementation.md) |
 
-```powershell
-cd C:\Users\ZHUOZhuang\Documents\lvgl-dev
-& 'C:\Espressif\tools\python\v6.1\venv\Scripts\python.exe' .\tools\codex_status_probe.py --watch
-```
+两款设备使用独立固件，共用电脑端采集逻辑。AMOLED 型号须为 **V2**；LCD-7 固件不适用于 7B/7C。
 
-预期输出（端口号和任务数以实际为准）：
+## 工作方式
 
 ```text
-Auto-selected CH343 serial port: COM3
-sent 1 codex + 1 kimi task(s) to COM3
-panel confirmed: I (...) desk_panel: REAL snapshot tasks=2 cards=4
+电脑上的 Codex / Kimi Code
+            │
+      Python 状态采集
+            │
+            ├── USB 串口 ────── LCD-7
+            │
+            └── 局域网 HTTP ─── AMOLED 2.41 V2
 ```
 
-保持窗口运行；`Ctrl+C` 停止。默认每轮等待 10 秒，另加 Codex 读取与串口处理耗时，并非严格每 10 秒一次。重启电脑或关闭桥接后需要重新执行；**自动找串口不等于开机自启**。
+Codex 活动优先读取本地回合数据库，兼容旧日志；Kimi Code 活动从本机会话文件推导。服务商账户凭据留在电脑，屏幕接收用于显示的状态快照。
 
-上面的 Python 路径属于本机 ESP-IDF 安装。其他电脑需使用安装了 `pyserial` 的 Python，并提供可运行的 Codex，详见[运行与维护](docs/operations.md)。
+状态反映的是采集到的会话活动：“最近结束”不保证任务成功，“空闲”不代表项目完成。具体判定规则见[架构与数据协议](docs/architecture.md)，AMOLED 的网络行为见[实现说明](docs/ESP32-S3-Touch-AMOLED-2.41-V2/implementation.md)。
 
-## 页面与状态
+## 开始使用
 
-| 页面 | 内容 |
+电脑端目前以 **Windows / PowerShell** 为开发和验证环境。需要可运行且已登录的 Codex，以及安装了 `pyserial` 的 Python；Kimi Code 是可选数据源，自动读取本机 `~/.kimi-code` 中的会话文件。
+
+首次使用请先按上表中对应设备的文档完成烧录和配置。**已烧录并配置好的设备**，日常只需在项目根目录运行对应命令。
+
+### LCD-7：USB 同步
+
+用数据线连接板载 USB 转串口接口，将选择开关置于 **UART1**，关闭占用串口的调试或烧录工具，然后运行：
+
+```powershell
+python tools/codex_status_probe.py --watch
+```
+
+程序在启动时自动查找 CH343 串口。连接多个同型号串口设备时，可用 `--port COMx` 指定端口。收到设备确认后，屏幕会显示采集到的会话与额度。
+
+### AMOLED 2.41 V2：局域网同步
+
+先按[配置与操作](docs/ESP32-S3-Touch-AMOLED-2.41-V2/implementation.md#配置与操作)设置设备 Wi-Fi、快照地址和访问令牌，并准备本机 `local/amoled-config.json`，然后启动电脑端服务：
+
+```powershell
+python tools/amoled_server.py
+```
+
+电脑和设备需要能在局域网内互相访问，防火墙需允许设备访问服务端口（默认 TCP 8765）。设备定期获取快照，断线后自动重连。当前 HTTP 服务适用于可信局域网，使用访问令牌但不提供传输加密。
+
+两种方式都需要保持电脑端程序运行，`Ctrl+C` 停止；目前未提供开机自启。LCD-7 串口桥接在运行中断线后需要重新启动。
+
+## 开发与文档
+
+固件基于 **ESP-IDF 6.1、LVGL 9.5.0**，各设备的精确依赖记录在对应固件目录的 `dependencies.lock` 中。仅修改电脑端采集逻辑时，无需重新烧录设备。
+
+| 入口 | 内容 |
 | --- | --- |
-| Sessions | 本次收到的会话，需关注项排在前面；点击进入详情 |
-| Attention | 最近结束、等待输入或失败的会话，不是审批列表 |
-| Information | All 显示各软件概览；选中 Codex 后显示 ACTIVITY、CODEX LEFT、RESET IN、LINK 四张卡片；本机有 Kimi 数据时 LINK 卡让位给 Kimi 的 ACTIVITY 卡（卡片上限 4）；选中 Kimi 后显示其 ACTIVITY 卡 |
+| [LCD-7 运行与维护](docs/operations.md) | 环境准备、命令参数、构建、烧录与排障 |
+| [AMOLED V2 实现说明](docs/ESP32-S3-Touch-AMOLED-2.41-V2/implementation.md) | 界面、网络配置、操作步骤与验证记录 |
+| [架构与数据协议](docs/architecture.md) | 状态来源、LCD-7 串口协议与扩展设计 |
+| [多设备维护约定](docs/devices.md) | 固件边界与共享代码规则 |
+| [LCD-7 验证记录](docs/validation.md) | 已验证内容、已知问题与待验收项目 |
+| [LCD-7 硬件资料](docs/ESP32-S3-Touch-LCD-7/README.md) / [AMOLED V2 硬件资料](docs/ESP32-S3-Touch-AMOLED-2.41-V2/README.md) | 官方文档、硬件和驱动参考 |
+| [电脑端采集](tools/codex_status_probe.py) / [局域网服务](tools/amoled_server.py) | 数据采集与快照服务源码 |
 
-顶部 `sessions`、`running`、`completed` 按当前软件筛选计数；底部 Attention 数量包含完成、等待输入和失败。全局提醒条不受当前筛选影响，不会自动跳页；通知随原会话退出 COMPLETED 状态而消失，没有独立已读存储。
+## 致谢与许可证
 
-- `RUNNING`：Codex 优先取本地数据库的最新回合状态，Kimi 使用日志推导；均不等于进程存活检测。
-- `COMPLETED`：最近回合结束提示，通常约两分钟后回到 `IDLE`。Codex 数据库使用回合完成时间，旧日志与 Kimi 使用文件修改时间，且中止也归入结束提示，**不能据此认定任务成功**。
-- `IDLE`：未检测到活动回合，不代表整个项目已完成。
-- `SYNCED`：刚收到串口快照，不代表上游状态一定完整；`STALE DATA` 表示快照已过期。
+活动采集思路参考 [codex-monitor](https://github.com/manuelsh/codex-monitor)，额度读取参考 [Waveshare codex-meter](https://github.com/waveshareteam/codex-meter)。
 
-`CODEX LEFT` 例如 `78%` 表示所选额度窗口约剩 78%；`prolite / 10080 min window` 中前者是接口返回的套餐标识，后者为 7 天窗口。`RESET IN 3d 13h` 是该窗口距离重置的剩余时间，按整小时向下取整，不是任务剩余时间。当前仅显示 `primary` 窗口。`LINK: USB UART` 是链路类型说明，不是独立连接探测；本机有 Kimi 数据时 LINK 卡被 Kimi 的 ACTIVITY 卡取代，不在 Information 页显示。
-
-状态判定边界、计数口径和额度来源详见[架构说明](docs/architecture.md)。
-
-## 常用命令
-
-在项目根目录执行；以下 `python` 请替换为快速开始中的 Python 路径，或在对应虚拟环境内运行。
-
-```powershell
-python tools/codex_status_probe.py --watch                  # 自动识别，持续同步
-python tools/codex_status_probe.py --port COM3 --watch      # 手动指定串口
-python tools/codex_status_probe.py --port auto              # 自动识别，仅推送一次
-python tools/codex_status_probe.py --watch --limit 4        # 最近更新的 4 个会话
-python tools/codex_status_probe.py --watch --no-kimi        # 跳过 Kimi Code 采集
-python tools/codex_status_probe.py                         # 只输出 JSON，不连接串口
-python tools/codex_status_probe.py --self-test             # 无需设备/登录的自检
-python -m serial.tools.list_ports -v                      # 枚举串口，不打开串口
-```
-
-自动选择条件：USB VID:PID 为 `1A86:55D3`，并且只有一个匹配端口。无匹配或多个同型号设备时会列出端口并退出，可用 `--port COMx` 指定。匹配的是串口型号，不是固件身份，不会自动试写其他串口。
-
-## 开发与烧录
-
-本机工具链：**ESP-IDF 6.1、LVGL 9.5.0、esp_lvgl_adapter 0.5.2**。精确依赖保存在 [dependencies.lock](firmware/dependencies.lock)。目标为 LCD-7，不要使用 7B/7C 驱动。
-
-普通 PowerShell 中从项目根目录构建：
-
-```powershell
-.\tools\build.ps1
-```
-
-脚本通过 EIM 注册表加载已安装的 v6.1 环境。若执行策略阻止脚本，可仅对此次进程放行：
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\build.ps1
-```
-
-烧录前停止桥接和其他串口软件。打开 **EIM 提供的 ESP-IDF PowerShell**，执行（COM3 替换成当前端口）：
-
-```powershell
-cd C:\Users\ZHUOZhuang\Documents\lvgl-dev\firmware
-idf.py -p COM3 flash monitor
-```
-
-`Ctrl+]` 退出 monitor，再运行桥接。烧录会覆盖对应 Flash 分区；不要把 `desk_panel.bin` 单独写到 `0x0`，它是 `0x10000` 的应用镜像。完整步骤与排障见[运行与维护](docs/operations.md)。仅修改 Python 桥接不需要重新烧录。
-
-## 文档与源码入口
-
-| 入口 | 用途 |
-| --- | --- |
-| [运行与维护](docs/operations.md) | 参数、启动、构建、烧录、故障排查、本地 Git |
-| [架构与数据协议](docs/architecture.md) | 状态推导、串口格式、容量、安全边界、扩展方案 |
-| [验证记录](docs/validation.md) | 已验证内容、历史版本、待验收项目与已知问题 |
-| [设备资料](docs/ESP32-S3-Touch-LCD-7/README.md) | 硬件与官方文档索引；早期设计明确标为历史资料 |
-| [驱动来源](firmware/board/UPSTREAM.md) | 上游提交、许可证与 IDF 6.1 迁移说明 |
-| [桥接脚本](tools/codex_status_probe.py) | 状态采集、自动串口识别、快照输出 |
-| [界面](firmware/main/panel_ui.c) | 页面、颜色、计数和触控交互 |
-| [模型](firmware/main/panel_model.h) | 字段长度、状态枚举、8 个会话与 4 张卡片的上限 |
-| [固件入口](firmware/main/main.c) | 初始化、串口解析、快照发布与过期计时 |
-
-## 版本管理与来源
-
-项目仓库：[EESheep/agent-desk](https://github.com/EESheep/agent-desk)，分支 `main`，首次基线提交 `ae4385d`。`.gitignore` 排除构建产物、下载依赖、迁移备份、原始会话日志和常见凭据文件。保留 `sdkconfig.defaults` 和 `dependencies.lock`，本机生成的 `sdkconfig` 不提交。
-
-活动采集思路参考 [codex-monitor](https://github.com/manuelsh/codex-monitor)，额度读取参考 [Waveshare codex-meter](https://github.com/waveshareteam/codex-meter)。并非把两个完整项目运行在 ESP32 上，也无需启动它们的 Web 服务。保留硬件驱动原有版权声明。账户凭据留在电脑，不发送给 ESP32。
-
-## 许可证
-
-本项目原创代码采用 [Apache-2.0](LICENSE)。第三方代码和依赖保留各自的版权与许可，包括驱动中的 CC0-1.0 声明；详见 [NOTICE](NOTICE) 和[驱动来源说明](firmware/board/UPSTREAM.md)。
+本项目原创代码采用 [Apache-2.0](LICENSE)。第三方代码和依赖保留各自的版权与许可，详见 [NOTICE](NOTICE) 和[驱动来源说明](firmware/board/UPSTREAM.md)。
