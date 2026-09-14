@@ -20,7 +20,11 @@ def number(value):
 def make_snapshot(tasks, usage, kimi_available):
     """Titles remain Unicode; reject oversized source data rather than silently truncate."""
     result = []
-    for task in tasks[:8]:
+    priority = {"active": 0, "waiting": 1, "systemError": 2, "completed": 3, "idle": 4}
+    ordered = sorted(tasks, key=lambda task: (
+        priority.get(task.get("status"), 5),
+        -task["updatedAt"] if number(task.get("updatedAt")) else 0))
+    for task in ordered[:8]:
         source = task.get("source", "codex")
         if source not in ("codex", "kimi", "dsh"):
             raise ValueError("unknown task source")
@@ -32,8 +36,6 @@ def make_snapshot(tasks, usage, kimi_available):
         if len(item["id"].encode()) > 255 or len(item["title"].encode()) > 4096:
             raise ValueError("source title/id exceeds network capacity")
         result.append(item)
-    priority = {"waiting": 0, "systemError": 1, "completed": 2, "active": 3, "idle": 4}
-    result.sort(key=lambda item: priority.get(item["status"], 5))
     windows = []
     buckets = usage.get("buckets") or {}
     if not isinstance(buckets, dict):

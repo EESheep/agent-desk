@@ -12,7 +12,7 @@ LV_FONT_DECLARE(font_cjk_28);
 static cJSON *snapshot;
 static int64_t received_us;
 static double received_age, server_time;
-static bool wifi_ok, http_ok, configured;
+static bool wifi_ok, http_ok, configured, offline;
 static int page, list_page, provider_index, window_index;
 static bool choosing;
 static char selected_id[256], selected_source[16];
@@ -40,7 +40,8 @@ static const char *state_name(const char *s) {
 }
 static lv_color_t state_color(const char *s) {
     return lv_color_hex(!strcmp(s,"waiting") ? 0xffd478 : !strcmp(s,"completed") ? 0x9fdda9 :
-                        !strcmp(s,"systemError") ? 0xff9999 : 0x81d7ee);
+                        !strcmp(s,"systemError") ? 0xff9999 : !strcmp(s,"active") ? 0x81d7ee :
+                        !strcmp(s,"idle") ? 0x9aa7b2 : 0xc6a8ef);
 }
 static double age(void) { return received_age + (esp_timer_get_time()-received_us)/1000000.; }
 static bool stale(void) { return !snapshot || age() > 30; }
@@ -89,18 +90,20 @@ static void move_window(lv_event_t *e) {
 static void refresh(void) {
     char text[320];
     if (!configured) snprintf(text,sizeof(text),"请配置 Wi-Fi");
-    else if (!wifi_ok) snprintf(text,sizeof(text),"Wi-Fi 重连中");
-    else if (!snapshot) snprintf(text,sizeof(text),"等待电脑数据");
-    else snprintf(text,sizeof(text),"%s · %ds",!http_ok ? "电脑不可达" : stale() ? "数据已过期" : "已同步",(int)age());
+    else if (offline) snprintf(text,sizeof(text),"离线");
+    else if (!wifi_ok || !http_ok || !snapshot) snprintf(text,sizeof(text),"同步中");
+    else snprintf(text,sizeof(text),"%s",stale() ? "数据已过期" : "已同步");
     lv_label_set_text(connection_label,text);
-    lv_obj_set_style_text_color(connection_label,lv_color_hex(stale()?0xffd478:0xacc3ce),0);
+    lv_obj_set_style_text_color(connection_label,lv_color_hex(offline||stale()?0xffd478:0xacc3ce),0);
     if (choosing) return;
     if (*selected_id) {
         cJSON *task=NULL,*entry;
         cJSON_ArrayForEach(entry,tasks()) if (!strcmp(str(entry,"id"),selected_id) && !strcmp(str(entry,"source"),selected_source)) { task=entry; break; }
         lv_label_set_text(detail_title,task ? str(task,"title") : "会话已不在当前列表中");
         snprintf(text,sizeof(text),"%s · %s%s",source_name(selected_source),stale()?"上次：":"",task?state_name(str(task,"status")):"不可用");
-        lv_label_set_text(detail_state,text); return;
+        lv_label_set_text(detail_state,text);
+        lv_obj_set_style_text_color(detail_state,task?state_color(str(task,"status")):lv_color_hex(0xacc3ce),0);
+        return;
     }
     if (!page) {
         int count=cJSON_GetArraySize(tasks()), pages=(count+1)/2;
@@ -204,16 +207,17 @@ static void rebuild(void) {
     }
     refresh();
 }
-void panel_network(bool wifi, bool http, bool ready) {
-    wifi_ok=wifi; http_ok=http; configured=ready; refresh();
+void panel_network(bool wifi, bool http, bool ready, bool is_offline) {
+    wifi_ok=wifi; http_ok=http; configured=ready; offline=is_offline; refresh();
 }
 static bool valid_string(cJSON *o,const char *key,size_t max) {
     cJSON *v=cJSON_GetObjectItemCaseSensitive(o,key);
     return cJSON_IsString(v) && v->valuestring && strlen(v->valuestring)<=max;
 }
 bool panel_accept(const char *json) {
+    bool pressed=false;
     for(lv_indev_t *input=lv_indev_get_next(NULL);input;input=lv_indev_get_next(input))
-        if(lv_indev_get_state(input)==LV_INDEV_STATE_PRESSED) return false;
+        if(lv_indev_get_state(input)==LV_INDEV_STATE_PRESSED) pressed=true;
     cJSON *incoming=cJSON_Parse(json), *t=cJSON_GetObjectItemCaseSensitive(incoming,"tasks"), *p=cJSON_GetObjectItemCaseSensitive(incoming,"providers"), *entry;
     bool valid=incoming && num(incoming,"version",0)==1 && cJSON_IsArray(t) && cJSON_GetArraySize(t)<=8 &&
         cJSON_IsArray(p) && cJSON_GetArraySize(p)==3 && num(incoming,"age_seconds",-1)>=0 && num(incoming,"server_time",-1)>=0;
@@ -231,19 +235,10 @@ bool panel_accept(const char *json) {
         cJSON_ArrayForEach(w,windows) valid=valid && num(w,"left",-1)>=0 && num(w,"left",101)<=100;
     }
     if(!valid) { cJSON_Delete(incoming); return false; }
-    // Keep existing row identities stable during polling; append new tasks after survivors.
-    cJSON *ordered=cJSON_CreateArray();
-    if (!ordered) { cJSON_Delete(incoming); return false; }
-    cJSON_ArrayForEach(entry,tasks()) {
-        for(int i=0;i<cJSON_GetArraySize(t);i++) {
-            cJSON *candidate=cJSON_GetArrayItem(t,i);
-            if(!strcmp(str(candidate,"source"),str(entry,"source")) && !strcmp(str(candidate,"id"),str(entry,"id"))) {
-                cJSON_AddItemToArray(ordered,cJSON_DetachItemFromArray(t,i)); break;
-            }
-        }
-    }
-    while(cJSON_GetArraySize(t)) cJSON_AddItemToArray(ordered,cJSON_DetachItemFromArray(t,0));
-    cJSON_ReplaceItemInObjectCaseSensitive(incoming,"tasks",ordered);
+    // Deferring a valid snapshot during a touch is not a network failure.
+    if(pressed) { cJSON_Delete(incoming); return true; }
+    // Adopt the server's latest activity order; the pressed-input guard above
+    // keeps a row from moving underneath a touch in progress.
     cJSON_Delete(snapshot); snapshot=incoming;
     received_us=esp_timer_get_time(); received_age=num(snapshot,"age_seconds",0); server_time=num(snapshot,"server_time",0);
     refresh(); return true;

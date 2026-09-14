@@ -5,6 +5,7 @@ import json
 import math
 import os
 import queue
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -62,12 +63,24 @@ def rollout_states(thread_ids, active_window=15 * 60, completed_window=2 * 60):
     states = {thread_id: "unknown" for thread_id in wanted}
     home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
     now = time.time()
+    history_ids = {}
+    try:
+        with closing(sqlite3.connect((home / "state_5.sqlite").resolve().as_uri()+"?mode=ro", uri=True, timeout=1)) as index:
+            for thread_id in wanted:
+                row = index.execute("SELECT rollout_path FROM threads WHERE id=?", (thread_id,)).fetchone()
+                # Desktop resumes may retain the public ID but project turns under
+                # the UUID appended to the current rollout filename.
+                match = re.search(re.escape(thread_id)+r"_([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\.jsonl$", row[0]) if row else None
+                if match:
+                    history_ids[thread_id] = match[1]
+    except sqlite3.Error:
+        pass
     # New desktop builds persist live turns in SQLite; old JSONL may stop updating.
     # Read-only and schema-guarded because this is an internal Codex database.
     try:
         with closing(sqlite3.connect((home / "thread_history_1.sqlite").resolve().as_uri()+"?mode=ro", uri=True, timeout=1)) as db:
             for thread_id in tuple(wanted):
-                row = db.execute("SELECT status, completed_at FROM thread_turns WHERE thread_id=? ORDER BY rollout_ordinal DESC LIMIT 1", (thread_id,)).fetchone()
+                row = db.execute("SELECT status, completed_at FROM thread_turns WHERE thread_id=? ORDER BY rollout_ordinal DESC LIMIT 1", (history_ids.get(thread_id, thread_id),)).fetchone()
                 if row is None:
                     continue
                 status, completed_at = row
@@ -84,7 +97,7 @@ def rollout_states(thread_ids, active_window=15 * 60, completed_window=2 * 60):
     if not root.exists():
         return states
     for path in root.rglob("*.jsonl"):
-        thread_id = next((item for item in wanted if path.stem.endswith(item)), None)
+        thread_id = next((item for item in wanted if path.stem.endswith(history_ids.get(item, item))), None)
         if not thread_id:
             continue
         try:
@@ -229,7 +242,10 @@ def merged_tasks(codex_tasks, kimi_tasks):
             j += 1
     merged.extend(dict(task, source="codex") for task in codex_tasks[i:])
     merged.extend(kimi_tasks[j:])
-    return merged
+    unique = {}
+    for task in merged:
+        unique.setdefault((task.get("source"), task["id"]), task)
+    return list(unique.values())
 
 
 def normalize_usage(result):

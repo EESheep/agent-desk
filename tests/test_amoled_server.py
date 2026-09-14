@@ -27,7 +27,16 @@ assert make_snapshot([],normalize_usage({"rateLimits":{"primary":{"usedPercent":
 assert data["providers"][1]["windows"] == []
 assert data["providers"][1]["available"] is True
 ordered=make_snapshot([{"id":s,"title":s,"status":s} for s in ("idle","active","waiting")],{},False)
-assert [t['status'] for t in ordered['tasks']] == ['waiting','active','idle']
+assert [t['status'] for t in ordered['tasks']] == ['active','waiting','idle']
+cross_project = [
+    {"id":"old-active", "title":"Project A", "status":"active", "updatedAt":100},
+    {"id":"recent-idle", "title":"Project B", "status":"idle", "updatedAt":300},
+    {"id":"new-active", "title":"Project C", "status":"active", "updatedAt":200},
+]
+assert [t['id'] for t in make_snapshot(cross_project,{},False)['tasks']] == [
+    'new-active','old-active','recent-idle']
+cross_project[1]['status'] = 'active'
+assert make_snapshot(cross_project,{},False)['tasks'][0]['id'] == 'recent-idle'
 cache=SnapshotCache()
 assert cache.get() is None
 with patch("amoled_server.time.monotonic",return_value=100): cache.put(data)

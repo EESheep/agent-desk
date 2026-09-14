@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"tools"))
-from codex_status_probe import rollout_states, normalize
+from codex_status_probe import rollout_states, normalize, merged_tasks
 
 with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CODEX_HOME": tmp}), patch("codex_status_probe.time.time", return_value=2000):
     root = Path(tmp)
@@ -31,6 +31,19 @@ with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CODEX_HOME":
         "live":"active", "done":"completed", "old":"idle", "failed":"systemError",
         "future":"unknown", "legacy":"idle"}
     assert normalize({"status":{"type":"notLoaded"}}, "active")["status"] == "active"
+    # A resumed desktop task can keep its public ID while using a new history ID.
+    history_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    index = sqlite3.connect(root/"state_5.sqlite")
+    index.execute("CREATE TABLE threads(id TEXT, rollout_path TEXT)")
+    index.execute("INSERT INTO threads VALUES(?,?)", ("old", str(logs/f"rollout-date-old_{history_id}.jsonl")))
+    index.commit()
+    index.close()
+    db.execute("INSERT INTO thread_turns VALUES(?,?,?,?)", (history_id, "inProgress", None, 1))
+    db.commit()
+    assert rollout_states(["old"])["old"] == "active"
+    db.execute("UPDATE thread_turns SET status='completed', completed_at=1995 WHERE thread_id=?", (history_id,))
+    db.commit()
+    assert rollout_states(["old"])["old"] == "completed"
     db.execute("DROP TABLE thread_turns")
     db.commit()
     db.close()
@@ -38,3 +51,8 @@ with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"CODEX_HOME":
     os.utime(legacy, (1, 1))
     assert rollout_states(["legacy"])["legacy"] == "unknown"
 print("PASS: latest SQLite turn, completion/error states, unknown states, legacy/schema fallback")
+assert merged_tasks([{"id":"same", "updatedAt":2}, {"id":"same", "updatedAt":1}],
+                    [{"id":"same", "source":"kimi", "updatedAt":0}]) == [
+    {"id":"same", "source":"codex", "updatedAt":2},
+    {"id":"same", "source":"kimi", "updatedAt":0}]
+print("PASS: duplicate public IDs removed without merging different providers")

@@ -143,21 +143,25 @@ static void wifi_event(void *arg,esp_event_base_t base,int32_t id,void *data) {
     }
 }
 static void report(bool wifi,bool http) {
-    if(esp_lv_adapter_lock(-1)==ESP_OK) { panel_network(wifi,http,ready); esp_lv_adapter_unlock(); }
+    static unsigned failures;
+    failures=http ? 0 : failures<3 ? failures+1 : 3;
+    if(!http) ESP_LOGW(TAG,"SYNC_FAILED count=%u",failures);
+    if(esp_lv_adapter_lock(-1)==ESP_OK) { panel_network(wifi,http,ready,failures>=3); esp_lv_adapter_unlock(); }
 }
 static void network_task(void *arg) {
     (void)arg;
     char *body=malloc(65537), auth[160];
     if(!body) { ESP_LOGE(TAG,"Cannot allocate network buffer"); vTaskDelete(NULL); }
     snprintf(auth,sizeof(auth),"Bearer %s",token);
-    esp_http_client_config_t config={.url=endpoint,.timeout_ms=3500,.buffer_size=2048,.disable_auto_redirect=true};
+    esp_http_client_config_t config={.url=endpoint,.timeout_ms=1500,.buffer_size=2048,.disable_auto_redirect=true};
     esp_http_client_handle_t client=esp_http_client_init(&config);
     if(!client) { free(body); vTaskDelete(NULL); }
     esp_http_client_set_header(client,"Authorization",auth);
     while(1) {
+        TickType_t cycle_start=xTaskGetTickCount();
         if(!(xEventGroupGetBits(network_events)&BIT0)) {
             report(false,false); esp_wifi_connect();
-            xEventGroupWaitBits(network_events,BIT0,pdFALSE,pdFALSE,pdMS_TO_TICKS(5000));
+            xEventGroupWaitBits(network_events,BIT0,pdFALSE,pdFALSE,pdMS_TO_TICKS(2000));
             continue;
         }
         bool valid=false;
@@ -180,7 +184,7 @@ static void network_task(void *arg) {
         }
         esp_http_client_close(client);
         report((xEventGroupGetBits(network_events)&BIT0)!=0,valid);
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        xTaskDelayUntil(&cycle_start,pdMS_TO_TICKS(2000));
     }
 }
 void app_main(void) {
@@ -200,7 +204,7 @@ void app_main(void) {
     bsp_display_indev_init(bsp_touch_init(bus,LCD_WIDTH,LCD_HEIGHT));
     ESP_ERROR_CHECK(esp_lv_adapter_start());
     ESP_ERROR_CHECK(bsp_display_brightness_set(65));
-    if(esp_lv_adapter_lock(-1)==ESP_OK) { panel_init(); panel_network(false,false,ready); esp_lv_adapter_unlock(); }
+    if(esp_lv_adapter_lock(-1)==ESP_OK) { panel_init(); panel_network(false,false,ready,false); esp_lv_adapter_unlock(); }
     ESP_LOGI(TAG,"AGENT_DESK_AMOLED_V2 UI_READY 600x450 config=%d",ready);
     xTaskCreate(serial_task,"provision",6144,NULL,3,NULL);
     if(!ready) return;
